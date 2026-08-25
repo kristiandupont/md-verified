@@ -53,6 +53,12 @@ export interface Registration {
   fn: (payload: any, ctx: VerifyContext) => unknown;
 }
 
+/**
+ * Keyed by `id:mode`. One anchor may carry both an `each` and an `all`
+ * handler -- per-element checks and a whole-asset check such as `covers()`
+ * answer different questions about the same table or diagram. Registering the
+ * same mode twice is still an error, so typos are still caught.
+ */
 const registry = new Map<string, Registration>();
 
 function register(id: string, kind: AnchorKind, mode: HandlerMode, fn: Function): void {
@@ -62,13 +68,21 @@ function register(id: string, kind: AnchorKind, mode: HandlerMode, fn: Function)
   if (typeof fn !== 'function') {
     throw new TypeError(`verify: handler for \`${id}\` must be a function`);
   }
-  const existing = registry.get(id);
-  if (existing) {
+
+  const clash = [...registry.values()].find((r) => r.id === id && r.kind !== kind);
+  if (clash) {
     throw new Error(
-      `verify: \`${id}\` is already registered as ${existing.kind}.${existing.mode}; ids must be unique per run`,
+      `verify: \`${id}\` is already registered as verify.${clash.kind}; one anchor cannot be two kinds`,
     );
   }
-  registry.set(id, { id, kind, mode, fn: fn as Registration['fn'] });
+
+  const key = `${id}:${mode}`;
+  if (registry.has(key)) {
+    throw new Error(
+      `verify: \`${id}\` already has a ${kind}.${mode} handler; register it once`,
+    );
+  }
+  registry.set(key, { id, kind, mode, fn: fn as Registration['fn'] });
 }
 
 /** Register a table handler, called once per data row. */
@@ -102,9 +116,9 @@ export const verify = {
   },
 };
 
-/** Look up the handler bound to an anchor id. */
-export function getRegistration(id: string): Registration | undefined {
-  return registry.get(id);
+/** Every handler bound to an anchor id: at most one `each` and one `all`. */
+export function getRegistrations(id: string): Registration[] {
+  return [...registry.values()].filter((r) => r.id === id);
 }
 
 /** Every registration, in declaration order. */

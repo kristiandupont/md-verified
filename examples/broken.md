@@ -9,6 +9,9 @@ every failure below is a real disagreement between prose and behaviour.
 Run `bun run check.ts examples/broken.md --report` to see this file annotated
 with its own failures.
 
+Totals are computed by [`calculateTotals`](./checkout.ts#calculateTotals), and
+the rules live in [the missing appendix](./appendix.md).
+
 ## Order totals
 
 > 🛠️ **Verified Data:** `orderTotals`

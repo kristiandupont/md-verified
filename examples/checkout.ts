@@ -28,6 +28,11 @@ export async function checkNavigation(from: string, to: string): Promise<boolean
   return TRANSITIONS.has(`${from}>${to}`);
 }
 
+/** Every transition the machine permits, as `From -> To`. */
+export function allowedTransitions(): string[] {
+  return [...TRANSITIONS].map((t) => t.split('>').join(' -> '));
+}
+
 export interface PaymentMethod {
   settlesImmediately: boolean;
   requiresApproval: boolean;
@@ -44,6 +49,11 @@ export function paymentMethod(name: string): PaymentMethod | undefined {
   return METHODS[name.toLowerCase()];
 }
 
+/** Every payment method the system supports. */
+export function paymentMethodNames(): string[] {
+  return Object.keys(METHODS);
+}
+
 /** Registered tax rates, by jurisdiction code. */
 const TAX_RATES: Record<string, number> = {
   'DK': 0.25,
@@ -54,4 +64,9 @@ const TAX_RATES: Record<string, number> = {
 
 export function taxRateFor(code: string): number | undefined {
   return TAX_RATES[code.toUpperCase()];
+}
+
+/** Every jurisdiction we have a registered rate for. */
+export function taxJurisdictions(): string[] {
+  return Object.keys(TAX_RATES);
 }

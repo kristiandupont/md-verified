@@ -118,8 +118,66 @@ none.
 `from(id)`, `to(id)`, `hasEdge(a, b)`, `hasPath(a, b)`, `roots()` and
 `leaves()`.
 
+One anchor may carry both an `each` and an `all` handler — they answer
+different questions about the same asset. Registering the same mode twice is
+still an error, so typos are still caught.
+
 Glue is located by, in order: `--glue`, a `<!-- verify: ./x.verify.ts -->` hint
 in the document, then `<name>.verify.ts` beside the Markdown file.
+
+## Completeness
+
+Per-element handlers only ever check elements that exist. If the code grows a
+fifth payment method and nobody adds a row, every row still passes and the
+document is quietly wrong. `covers()` is the assertion that catches it:
+
+```ts
+verify.mermaid('checkoutFlow', (graph) => {
+  covers(graph.edges.map((e) => `${e.from} -> ${e.to}`), allowedTransitions(), {
+    noun: 'transition',
+    missing: (t) => `${t} is allowed by checkNavigation but is not drawn`,
+    extra: false, // the per-edge handler already owns this direction
+  });
+});
+```
+
+It throws once, listing every gap, so a single run tells you the whole story.
+Options: `missing` / `extra` take a message function or `false` to allow that
+direction, `duplicates` (default on) flags a key the document lists twice, and
+`noun` names the thing in default messages.
+
+This is the check worth reaching for first. A *missing* element is
+machine-identifiable in a way a wrong one is not — the runner knows exactly
+which row should exist, which is what makes the annotation actionable.
+
+## Reference checking
+
+Anchors verify the assets. A second pass verifies the prose around them: links
+to files that have moved, in-document anchors that no longer resolve, and —
+where you ask for it with a fragment — symbols that no longer exist.
+
+```markdown
+Computed by [`calculateTotal`](./checkout.ts#calculateTotal).
+```
+
+That renders as an ordinary link, and it carries everything needed to check it:
+
+```
+examples/broken.md
+  ✖ 12:24 broken symbol: ./checkout.ts#calculateTotals (no export named
+          `calculateTotals`) (did you mean `calculateTotal`?)
+  ✖ 13:19 broken link: ./appendix.md (no such file)
+```
+
+Checked automatically: every link and image path, `#heading` anchors within the
+document and into other Markdown files, and link definitions. Nothing implicit
+is ever checked — bare inline code is not treated as a symbol, because
+`$10.00`, `--write` and `[itemsTotal: Currency]` are all inline code in a
+perfectly healthy spec. A document opts in by linking.
+
+Only files you fragment-link are imported, and only to read their export names.
+`--no-symbols` keeps the link checks but imports nothing; `--no-links` skips the
+pass entirely.
 
 ## Bi-directional state
 
@@ -163,13 +221,29 @@ bun run check.ts <file.md> [...] [options]
   --report        Print the annotated Markdown to stdout instead
   --reset         Return anchors to their unrun state
   --json          Machine-readable results, for agents and CI
+  --no-links      Skip link, anchor and symbol checking
+  --no-symbols    Check links, but do not import modules
   --only <id>     Run one anchor (repeatable)
   --bail          Stop at the first failure
   --timeout <ms>  Per-case timeout (default 5000, 0 disables)
   --verbose, -v   Show passing cases and stack frames
 ```
 
-Exit code is 0 only when every anchor passed and every anchor bound cleanly.
+Exit code is 0 only when every anchor passed, every anchor bound cleanly, and
+every reference resolved.
+
+### How things fail
+
+| | Reported as | Annotated into the document |
+| --- | --- | --- |
+| Handler throws | a failed case | yes |
+| A cell will not coerce | a failed case, that row only | yes |
+| Schema or diagram malformed | a failed anchor | yes |
+| No handler registered | a skipped anchor | yes |
+| Broken link or symbol | a problem, with `line:col` | no — it is prose, not an anchor |
+
+A row whose cell will not coerce never reaches your handler, and a whole-asset
+handler is never run against a table that is silently missing rows.
 
 ## Under `bun test`
 
@@ -197,6 +271,8 @@ See [`spec.test.ts`](./spec.test.ts).
 | [`src/framework.ts`](./src/framework.ts) | The `verify` registry |
 | [`src/runner.ts`](./src/runner.ts) | Execution, case planning, glue resolution |
 | [`src/report.ts`](./src/report.ts) | Terminal output and the Markdown rewrite |
+| [`src/references.ts`](./src/references.ts) | Link, anchor and symbol checking |
+| [`src/covers.ts`](./src/covers.ts) | Set assertions for completeness |
 | [`src/coerce.ts`](./src/coerce.ts) | `Schema:` value types |
 | [`check.ts`](./check.ts) | CLI |
 | [`examples/spec.md`](./examples/spec.md) | A specification that passes |
@@ -209,3 +285,9 @@ See [`spec.test.ts`](./spec.test.ts).
 - Glue modules are loaded with a cache-busting query string, so a long-lived
   process re-registering the same file will accumulate module instances.
 - Anchor ids must be unique per file; the CLI clears the registry between files.
+- Symbol checking reads *runtime* exports, so type-only exports (`export type`,
+  interfaces) are invisible to it. Reading those needs the TypeScript compiler
+  API rather than an import.
+- A reference with no definition (`[text][missing]`) cannot be flagged:
+  CommonMark leaves it as literal text, so there is no node in the tree. The
+  reader does see the broken brackets.

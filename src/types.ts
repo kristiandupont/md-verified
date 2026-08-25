@@ -1,4 +1,5 @@
 /** Shared vocabulary for the whole framework. */
+import type { Root } from 'mdast';
 
 /** The three kinds of native Markdown asset an anchor can bind to. */
 export type AnchorKind = 'table' | 'mermaid' | 'list';
@@ -55,12 +56,27 @@ export interface TableRow {
   readonly $headers: readonly string[];
 }
 
+/** A row that could not be built, e.g. a cell that failed to coerce. */
+export interface RowDefect {
+  /** Zero-based index the row would have had among data rows. */
+  index: number;
+  /** 1-based line in the source file. */
+  line: number;
+  message: string;
+}
+
 /** A whole parsed table. */
 export interface ParsedTable {
   headers: string[];
   /** Column alignment as declared in the delimiter row. */
   align: Array<'left' | 'right' | 'center' | null>;
+  /** Rows that were built successfully. Defective rows are absent. */
   rows: TableRow[];
+  /**
+   * Rows that could not be built. These are reported as failing cases rather
+   * than handed to a handler, so a bad cell never reaches glue code.
+   */
+  defects: RowDefect[];
   /** Declared schema, if the anchor carried a `**Schema:**` line. */
   schema: SchemaField[] | null;
 }
@@ -111,6 +127,13 @@ export interface Anchor {
   /** Status glyph found in the source. */
   status: Status;
   meta: AnchorMeta;
+  /**
+   * An anchor-level problem that makes the asset unusable -- a malformed
+   * schema, an unparseable diagram. The anchor is still returned so the runner
+   * can fail it and write the reason back into the document; `data` is an
+   * empty placeholder and is never handed to a handler.
+   */
+  defect: string | null;
   /** Parsed payload: shape depends on `kind`. */
   data: ParsedTable | MermaidGraph | ParsedList;
   /** 1-based line of the blockquote's first line. */
@@ -127,12 +150,16 @@ export interface Anchor {
 export interface ParseProblem {
   id: string | null;
   line: number;
+  /** 1-based column, when the diagnostic points at something inline. */
+  column?: number;
   message: string;
 }
 
 export interface ParseResult {
   file: string;
   source: string;
+  /** The mdast tree, kept so passes like reference checking can reuse it. */
+  tree: Root;
   anchors: Anchor[];
   problems: ParseProblem[];
 }

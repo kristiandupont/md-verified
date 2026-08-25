@@ -9,7 +9,8 @@ implementation in [`checkout.ts`](./checkout.ts) on each run.
 ## Order totals
 
 Tax applies to goods only — shipping is never taxed. Totals are rounded to
-cents at the end, not per line.
+cents at the end, not per line. Computed by
+[`calculateTotal`](./checkout.ts#calculateTotal).
 
 > 🛠️ **Verified Data:** `orderTotals`
 > **Schema:** `[itemsTotal: Currency, shipping: Currency, tax: Percentage, total: Currency]`
@@ -25,7 +26,12 @@ cents at the end, not per line.
 
 A customer may move forward through checkout, and back one step at a time.
 Skipping a step is never allowed — you cannot reach **Payment** without
-supplying a shipping address first.
+supplying a shipping address first. Enforced by
+[`checkNavigation`](./checkout.ts#checkNavigation).
+
+The diagram is checked in both directions: every edge drawn must be legal, and
+every legal transition must be drawn. See [Settlement](#settlement) for the
+same treatment applied to a list.
 
 > 🛠️ **Verified Flow:** `checkoutFlow`
 

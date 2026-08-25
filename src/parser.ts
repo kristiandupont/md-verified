@@ -34,6 +34,7 @@ import {
   type ParsedTable,
   type ParseProblem,
   type ParseResult,
+  type RowDefect,
   type SchemaField,
   type Status,
   type TableRow,
@@ -131,12 +132,16 @@ export function parseMarkdown(source: string, file = '<memory>'): ParseResult {
       continue;
     }
 
+    // An asset we cannot read is a *defect*, not a reason to drop the anchor:
+    // the anchor still binds, still fails, and still gets annotated, which is
+    // the whole point of writing state back into the document.
     let data: Anchor['data'];
+    let defect: string | null = null;
     try {
       data = extract(source, target, actual, meta);
     } catch (err) {
-      problems.push({ id, line, message: `anchor \`${id}\`: ${(err as Error).message}` });
-      continue;
+      defect = (err as Error).message;
+      data = emptyData(actual);
     }
 
     anchors.push({
@@ -145,6 +150,7 @@ export function parseMarkdown(source: string, file = '<memory>'): ParseResult {
       label,
       status,
       meta,
+      defect,
       data,
       line,
       quoteRange: { start: node.position!.start.offset!, end: node.position!.end.offset! },
@@ -155,7 +161,7 @@ export function parseMarkdown(source: string, file = '<memory>'): ParseResult {
     i = j - 1; // resume scanning just before the bound target
   }
 
-  return { file, source, anchors, problems };
+  return { file, source, tree, anchors, problems };
 }
 
 /** Read a `<!-- verify: ./glue.ts -->` hint, if the document carries one. */
@@ -195,6 +201,7 @@ function extractTable(source: string, node: any, meta: AnchorMeta): ParsedTable 
   }
 
   const dataRows: TableRow[] = [];
+  const defects: RowDefect[] = [];
 
   for (let r = 1; r < rows.length; r++) {
     const cells: string[] = (rows[r].children ?? []).map((cell: any) => cellText(source, cell));
@@ -204,6 +211,7 @@ function extractTable(source: string, node: any, meta: AnchorMeta): ParsedTable 
 
     const raw: Record<string, string> = {};
     const row: Record<string, unknown> = {};
+    let failure: string | null = null;
 
     headers.forEach((header: string, c: number) => {
       const text = cells[c]!;
@@ -215,9 +223,9 @@ function extractTable(source: string, node: any, meta: AnchorMeta): ParsedTable 
         try {
           value = coerce(text, field.type, field.optional);
         } catch (err) {
-          throw new Error(
-            `row ${r} column ${JSON.stringify(header)}: ${(err as Error).message}`,
-          );
+          // Record the first bad cell and keep the raw text, so the row is
+          // reported once rather than once per column.
+          failure ??= `column ${JSON.stringify(header)}: ${(err as Error).message}`;
         }
       }
 
@@ -226,8 +234,16 @@ function extractTable(source: string, node: any, meta: AnchorMeta): ParsedTable 
       if (field && field.name !== header) row[field.name] = value;
     });
 
+    const line = rows[r].position?.start.line ?? 0;
+
+    if (failure) {
+      // A row we cannot trust never reaches a handler.
+      defects.push({ index: r - 1, line, message: failure });
+      continue;
+    }
+
     define(row, '$index', r - 1);
-    define(row, '$line', rows[r].position?.start.line ?? 0);
+    define(row, '$line', line);
     define(row, '$raw', Object.freeze(raw));
     define(row, '$cells', Object.freeze(cells));
     define(row, '$headers', Object.freeze([...headers]));
@@ -235,7 +251,7 @@ function extractTable(source: string, node: any, meta: AnchorMeta): ParsedTable 
     dataRows.push(row as TableRow);
   }
 
-  return { headers, align, rows: dataRows, schema };
+  return { headers, align, rows: dataRows, defects, schema };
 }
 
 function extractList(source: string, node: any): ParsedList {
@@ -314,6 +330,13 @@ function splitTopLevel(text: string): string[] {
   }
   out.push(current);
   return out;
+}
+
+/** A safe placeholder for an anchor whose asset could not be read. */
+function emptyData(kind: AnchorKind): Anchor['data'] {
+  if (kind === 'table') return { headers: [], align: [], rows: [], defects: [], schema: null };
+  if (kind === 'list') return { ordered: false, items: [], flat: [] };
+  return parseMermaid('');
 }
 
 // ---------------------------------------------------------------------------

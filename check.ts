@@ -37,6 +37,8 @@ OPTIONS
   --report          Print the annotated Markdown to stdout instead of writing.
   --reset           Return every anchor to its unrun state and drop our comments.
   --json            Emit machine-readable results (for agents and CI).
+  --no-links        Skip link, anchor and symbol checking.
+  --no-symbols      Check links, but do not import modules to check symbols.
   --only <id>       Run only this anchor. Repeatable.
   --bail            Stop at the first failure.
   --timeout <ms>    Per-case timeout. Default 5000, 0 to disable.
@@ -74,6 +76,8 @@ function parseArgs(argv: string[]): Flags {
       case '--json': flags.json = true; break;
       case '--verbose': case '-v': flags.verbose = true; break;
       case '--no-color': setColor(false); break;
+      case '--no-links': flags.links = false; break;
+      case '--no-symbols': flags.symbols = false; break;
       case '--help': case '-h': flags.help = true; break;
       default:
         if (arg.startsWith('-')) throw new Error(`unknown option: ${arg}`);
@@ -117,6 +121,8 @@ async function main(): Promise<number> {
       only: flags.only!.length ? flags.only : undefined,
       bail: flags.bail,
       timeout: flags.timeout,
+      links: flags.links,
+      symbols: flags.symbols,
     });
     runs.push(run);
     if (!run.ok) failures++;

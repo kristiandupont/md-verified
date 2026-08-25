@@ -10,7 +10,8 @@ import { resolve, dirname, basename, extname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 
 import { findGlueHint, parseMarkdown } from './parser.ts';
-import { getRegistration, type VerifyContext } from './framework.ts';
+import { checkReferences } from './references.ts';
+import { getRegistrations, type VerifyContext } from './framework.ts';
 import type {
   Anchor,
   AnchorResult,
@@ -25,6 +26,10 @@ import type {
 export interface RunOptions {
   /** Only run anchors whose id is in this list. */
   only?: string[];
+  /** Check links, in-document anchors and fragment-linked symbols. Default on. */
+  links?: boolean;
+  /** Import fragment-linked modules to check symbols exist. Default on. */
+  symbols?: boolean;
   /** Stop after the first failing case. */
   bail?: boolean;
   /** Per-case timeout in ms. `0` disables. */
@@ -66,6 +71,15 @@ export async function runParsed(parsed: ParseResult, options: RunOptions = {}): 
     if (options.bail && result.status === 'failed') bailed = true;
   }
 
+  // Referential integrity of the surrounding prose. Skipped for in-memory
+  // documents, which have no directory to resolve relative links against.
+  const references =
+    options.links === false
+      ? []
+      : await checkReferences(parsed, { symbols: options.symbols });
+
+  const problems = [...parsed.problems, ...references];
+
   const summary = {
     anchors: results.length,
     passed: results.filter((r) => r.status === 'passed').length,
@@ -81,53 +95,36 @@ export async function runParsed(parsed: ParseResult, options: RunOptions = {}): 
     file: parsed.file,
     source: parsed.source,
     anchors: results,
-    problems: parsed.problems,
-    // Structural problems are failures too -- a spec that cannot bind is not green.
-    ok: summary.failed === 0 && parsed.problems.length === 0,
+    problems,
+    // Structural problems are failures too -- a spec that cannot bind, or that
+    // points at things which no longer exist, is not green.
+    ok: summary.failed === 0 && problems.length === 0,
     summary,
   };
 }
 
-/** Run every case for one anchor. */
+/** Run every case for one anchor. *//** Run every case for one anchor. */
 export async function runAnchor(
   anchor: Anchor,
   file: string,
   options: RunOptions = {},
 ): Promise<AnchorResult> {
-  const registration = getRegistration(anchor.id);
+  const plan = planCases(anchor, file);
 
-  if (!registration) {
-    return skipped(anchor, `no handler registered for \`${anchor.id}\``);
-  }
-  if (registration.kind !== anchor.kind) {
-    return {
-      ...base(anchor),
-      status: 'failed',
-      reason: `handler for \`${anchor.id}\` is registered as verify.${registration.kind}, but the document binds it to a ${anchor.kind}`,
-      cases: [],
-    };
+  if (plan.skipReason) return skipped(anchor, plan.skipReason);
+  if (plan.failReason) {
+    return { ...base(anchor), status: 'failed', reason: plan.failReason, cases: [] };
   }
 
-  const ctx: VerifyContext = {
-    id: anchor.id,
-    kind: anchor.kind,
-    label: anchor.label,
-    file,
-    line: anchor.line,
-    meta: anchor.meta,
-  };
-
-  const cases = buildCases(anchor, registration.mode);
   const results: CaseResult[] = [];
 
-  for (const c of cases) {
+  for (const kase of plan.cases) {
     if (options.bail && results.some((r) => r.status === 'failed')) {
-      results.push({ name: c.name, status: 'skipped', error: null, stack: null, durationMs: 0, line: c.line });
+      results.push({ name: kase.name, status: 'skipped', error: null, stack: null, durationMs: 0, line: kase.line });
       continue;
     }
-    results.push(await runCase(c, registration.fn, ctx, options.timeout ?? 5000));
+    results.push(await runPlanned(kase, options.timeout ?? 5000));
   }
-
 
   const failed = results.some((r) => r.status === 'failed');
   return {
@@ -139,7 +136,7 @@ export async function runAnchor(
 }
 
 // ---------------------------------------------------------------------------
-// planning (used by `bun test` to emit one native test per case)
+// planning
 // ---------------------------------------------------------------------------
 
 /** One case, ready to run. Throwing from `run` is the failure signal. */
@@ -150,26 +147,40 @@ export interface PlannedCase {
 }
 
 export interface Plan {
-  /** Set when the anchor cannot run at all. */
+  /** Set when the anchor is not this run's business at all. */
   skipReason: string | null;
+  /** Set when the anchor fails as a whole, before any case runs. */
+  failReason: string | null;
   cases: PlannedCase[];
 }
 
 /**
  * Resolve an anchor into runnable cases without executing them, so a test
  * framework can own the scheduling and reporting.
+ *
+ * This is the single planning path: `runAnchor` and `bun test` both consume
+ * it, so a defective row fails identically under either.
  */
 export function planCases(anchor: Anchor, file: string): Plan {
-  const registration = getRegistration(anchor.id);
+  const registrations = getRegistrations(anchor.id);
 
-  if (!registration) {
-    return { skipReason: `no handler registered for \`${anchor.id}\``, cases: [] };
+  if (registrations.length === 0) {
+    return { skipReason: `no handler registered for \`${anchor.id}\``, failReason: null, cases: [] };
   }
-  if (registration.kind !== anchor.kind) {
+
+  const wrongKind = registrations.find((r) => r.kind !== anchor.kind);
+  if (wrongKind) {
     return {
-      skipReason: `handler for \`${anchor.id}\` is verify.${registration.kind}, but the document binds a ${anchor.kind}`,
+      skipReason: null,
+      failReason: `handler for \`${anchor.id}\` is registered as verify.${wrongKind.kind}, but the document binds it to a ${anchor.kind}`,
       cases: [],
     };
+  }
+
+  // The asset itself could not be read: fail the anchor, but keep it bound so
+  // the reason is written back into the document.
+  if (anchor.defect) {
+    return { skipReason: null, failReason: anchor.defect, cases: [] };
   }
 
   const ctx: VerifyContext = {
@@ -181,16 +192,49 @@ export function planCases(anchor: Anchor, file: string): Plan {
     meta: anchor.meta,
   };
 
-  return {
-    skipReason: null,
-    cases: buildCases(anchor, registration.mode).map((c) => ({
-      name: c.name,
-      line: c.line,
+  const cases: PlannedCase[] = [];
+  const defects = anchor.kind === 'table' ? (anchor.data as ParsedTable).defects : [];
+
+  // A row that failed to coerce is a failing case in its own right. It never
+  // reaches a handler, so glue code never sees a half-built row.
+  for (const defect of defects) {
+    cases.push({
+      name: `row ${defect.index + 1}`,
+      line: defect.line,
       run: async () => {
-        await registration.fn(c.payload, ctx);
+        throw new Error(defect.message);
       },
-    })),
-  };
+    });
+  }
+
+  for (const registration of registrations) {
+    // A whole-asset handler must not run against a table that is silently
+    // missing rows -- a coverage check would report phantom gaps.
+    if (registration.mode === 'all' && defects.length > 0) {
+      cases.push({
+        name: wholeName(anchor.kind),
+        line: anchor.line,
+        run: async () => {
+          throw new Error(
+            `not run: ${defects.length} row(s) could not be read, so the ${anchor.kind} is incomplete`,
+          );
+        },
+      });
+      continue;
+    }
+
+    for (const kase of buildCases(anchor, registration.mode)) {
+      cases.push({
+        name: kase.name,
+        line: kase.line,
+        run: async () => {
+          await registration.fn(kase.payload, ctx);
+        },
+      });
+    }
+  }
+
+  return { skipReason: null, failReason: null, cases };
 }
 
 // ---------------------------------------------------------------------------
@@ -203,10 +247,15 @@ interface Case {
   payload: unknown;
 }
 
+/** How a whole-asset case is named, in the terminal and in error comments. */
+function wholeName(kind: Anchor['kind']): string {
+  return kind === 'mermaid' ? 'whole diagram' : `whole ${kind}`;
+}
+
 /** Fan an asset out into the cases a handler expects. */
 function buildCases(anchor: Anchor, mode: 'each' | 'all'): Case[] {
   if (mode === 'all') {
-    return [{ name: anchor.kind, line: anchor.line, payload: anchor.data }];
+    return [{ name: wholeName(anchor.kind), line: anchor.line, payload: anchor.data }];
   }
 
   if (anchor.kind === 'table') {
@@ -235,28 +284,28 @@ function buildCases(anchor: Anchor, mode: 'each' | 'all'): Case[] {
   }));
 }
 
-async function runCase(
-  c: Case,
-  fn: (payload: unknown, ctx: VerifyContext) => unknown,
-  ctx: VerifyContext,
-  timeout: number,
-): Promise<CaseResult> {
+async function runPlanned(kase: PlannedCase, timeout: number): Promise<CaseResult> {
   const started = performance.now();
   try {
-    const value = fn(c.payload, ctx);
-    if (value instanceof Promise) {
-      await (timeout > 0 ? withTimeout(value, timeout, c.name) : value);
-    }
-    return { name: c.name, status: 'passed', error: null, stack: null, durationMs: performance.now() - started, line: c.line };
+    const value = kase.run();
+    await (timeout > 0 ? withTimeout(value, timeout, kase.name) : value);
+    return {
+      name: kase.name,
+      status: 'passed',
+      error: null,
+      stack: null,
+      durationMs: performance.now() - started,
+      line: kase.line,
+    };
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     return {
-      name: c.name,
+      name: kase.name,
       status: 'failed',
       error: error.message || String(err),
       stack: error.stack ?? null,
       durationMs: performance.now() - started,
-      line: c.line,
+      line: kase.line,
     };
   }
 }

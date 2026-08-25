@@ -10,7 +10,11 @@ import { describe, expect, test, beforeAll } from 'bun:test';
 import { resolve } from 'node:path';
 
 import {
+  checkReferences,
+  clearReferenceCache,
   coerce,
+  covers,
+  headingSlugs,
   parseMarkdown,
   parseMermaid,
   parseSchema,
@@ -20,6 +24,7 @@ import {
   verify,
   loadGlue,
   resolveGlue,
+  slugify,
 } from './src/index.ts';
 import type { MermaidGraph, ParsedList, ParsedTable } from './src/index.ts';
 
@@ -52,6 +57,10 @@ describe('spec.md', () => {
 
       if (plan.skipReason) {
         test.skip(plan.skipReason, () => {});
+        return;
+      }
+      if (plan.failReason) {
+        test('binds cleanly', () => { throw new Error(plan.failReason!); });
         return;
       }
       for (const kase of plan.cases) {
@@ -146,20 +155,84 @@ describe('tables', () => {
     ]);
   });
 
-  test('rejects a schema whose width disagrees with the table', () => {
+  test('a schema whose width disagrees is an anchor defect, not a dropped anchor', () => {
     const r = parseMarkdown(
       '> 🛠️ **Verified Data:** `t`\n> **Schema:** `[a: Integer]`\n\n| A | B |\n| - | - |\n| 1 | 2 |\n',
       't.md',
     );
-    expect(r.problems[0]!.message).toMatch(/declares 1 field\(s\) but the table has 2/);
+    // The anchor still binds, so the failure can be written back into the file.
+    expect(r.problems).toEqual([]);
+    expect(r.anchors).toHaveLength(1);
+    expect(r.anchors[0]!.defect).toMatch(/declares 1 field\(s\) but the table has 2/);
   });
 
-  test('reports the cell that failed to coerce', () => {
-    const r = parseMarkdown(
-      '> 🛠️ **Verified Data:** `t`\n> **Schema:** `[n: Integer]`\n\n| N |\n| - |\n| abc |\n',
+  test('a cell that will not coerce defects only its own row', () => {
+    const t = parseMarkdown(
+      '> 🛠️ **Verified Data:** `t`\n> **Schema:** `[n: Integer]`\n\n| N |\n| - |\n| 1 |\n| abc |\n| 3 |\n',
+      't.md',
+    ).anchors[0]!.data as ParsedTable;
+
+    expect(t.defects).toEqual([
+      { index: 1, line: 7, message: 'column "N": cannot read "abc" as Integer' },
+    ]);
+    // The good rows survive, and keep their original numbering.
+    expect(t.rows.map((r) => r.$index)).toEqual([0, 2]);
+    expect(t.rows.map((r) => r['n'])).toEqual([1, 3]);
+  });
+
+  test('a defective row fails as a case and never reaches the handler', async () => {
+    verify.reset();
+    const seen: number[] = [];
+    verify.table('rows', (row) => { seen.push(row.$index); });
+
+    const p = parseMarkdown(
+      '> 🛠️ **Verified Data:** `rows`\n> **Schema:** `[n: Integer]`\n\n| N |\n| - |\n| 1 |\n| abc |\n',
       't.md',
     );
-    expect(r.problems[0]!.message).toMatch(/cannot read "abc" as Integer/);
+    const run = await runParsed(p);
+
+    expect(seen).toEqual([0]);
+    expect(run.anchors[0]!.status).toBe('failed');
+    expect(run.anchors[0]!.cases).toContainEqual(
+      expect.objectContaining({ name: 'row 2', status: 'failed', error: expect.stringContaining('cannot read "abc"') }),
+    );
+
+    // The whole point of the fix: this now reaches the document.
+    const out = rewriteMarkdown(p.source, p.anchors, run.anchors);
+    expect(out).toContain('> ❌ **Verified Data:** `rows` (Failed: 1 of 2)');
+    expect(out).toContain('<!-- ERROR: row 2: column "N": cannot read "abc" as Integer -->');
+  });
+
+  test('a whole-table handler is not run against a table missing rows', async () => {
+    verify.reset();
+    let called = false;
+    verify.table.all('whole', () => { called = true; });
+
+    const p = parseMarkdown(
+      '> 🛠️ **Verified Data:** `whole`\n> **Schema:** `[n: Integer]`\n\n| N |\n| - |\n| abc |\n',
+      't.md',
+    );
+    const run = await runParsed(p);
+
+    expect(called).toBe(false);
+    expect(run.anchors[0]!.cases.map((x) => x.error)).toContainEqual(
+      expect.stringContaining('1 row(s) could not be read'),
+    );
+  });
+
+  test('an unreadable diagram defects the anchor and is annotated', async () => {
+    verify.reset();
+    verify.mermaid('flow', () => {});
+
+    const p = parseMarkdown('> 🛠️ **Verified Flow:** `flow`\n\n```mermaid\ngraph TD\n  A -->\n```\n', 't.md');
+    expect(p.anchors[0]!.defect).toMatch(/has no target node/);
+
+    const run = await runParsed(p);
+    expect(run.anchors[0]!.status).toBe('failed');
+
+    const out = rewriteMarkdown(p.source, p.anchors, run.anchors);
+    expect(out).toContain('> ❌ **Verified Flow:** `flow` (Failed)');
+    expect(out).toMatch(/<!-- ERROR: .*has no target node.* -->/);
   });
 
   test('pads short rows, per GFM', () => {
@@ -308,14 +381,14 @@ describe('state reporting', () => {
     const { run } = await runBroken();
     expect(run.ok).toBe(false);
     expect(run.summary.failed).toBe(4);
-    expect(run.summary.casesFailed).toBe(5);
+    expect(run.summary.casesFailed).toBe(7);
   });
 
   test('marks failures and records the error inline', async () => {
     const { p, run } = await runBroken();
     const out = rewriteMarkdown(brokenSource, p.anchors, run.anchors);
 
-    expect(out).toContain('> ❌ **Verified Flow:** `checkoutFlow` (Failed: 1 of 4)');
+    expect(out).toContain('> ❌ **Verified Flow:** `checkoutFlow` (Failed: 2 of 5)');
     expect(out).toContain('<!-- ERROR: Cart -> Payment: illegal transition: Cart -> Payment -->');
     expect(out).toContain('> ❌ **Verified Data:** `orderTotals` (Failed: 2 of 3)');
     expect(out).toMatch(/<!-- ERROR: row 1: .*should total \$15\.00, got 16\.00 -->/);
@@ -346,7 +419,7 @@ describe('state reporting', () => {
     const twice = rewriteMarkdown(once, p2.anchors, run2.anchors);
 
     expect(twice).toBe(once);
-    expect(run2.summary.casesFailed).toBe(5);
+    expect(run2.summary.casesFailed).toBe(7);
   });
 
   test('a passing run clears the marks a failing run left', async () => {
@@ -396,10 +469,30 @@ describe('state reporting', () => {
 // ---------------------------------------------------------------------------
 
 describe('registry', () => {
-  test('rejects a duplicate id', () => {
+  test('rejects the same mode twice', () => {
     verify.reset();
     verify.table('dup', () => {});
-    expect(() => verify.mermaid('dup', () => {})).toThrow(/already registered/);
+    expect(() => verify.table('dup', () => {})).toThrow(/already has a table.each handler/);
+  });
+
+  test('rejects one id bound to two kinds', () => {
+    verify.reset();
+    verify.table('two', () => {});
+    expect(() => verify.mermaid('two', () => {})).toThrow(/already registered as verify.table/);
+  });
+
+  test('accepts an each and an all handler on one anchor', async () => {
+    verify.reset();
+    const seen: string[] = [];
+    verify.table('both', (row) => { seen.push(`each:${row.$index}`); });
+    verify.table.all('both', (table) => { seen.push(`all:${table.rows.length}`); });
+
+    const p = parseMarkdown('> 🛠️ **Verified Data:** `both`\n\n| A |\n| - |\n| 1 |\n| 2 |\n', 't.md');
+    const run = await runParsed(p);
+
+    expect(run.anchors[0]!.status).toBe('passed');
+    expect(seen).toEqual(['each:0', 'each:1', 'all:2']);
+    expect(run.anchors[0]!.cases.map((x) => x.name)).toEqual(['row 1', 'row 2', 'whole table']);
   });
 
   test('skips an anchor with no handler', async () => {
@@ -456,6 +549,202 @@ describe('registry', () => {
 });
 
 // ---------------------------------------------------------------------------
+// covers(): set assertions
+// ---------------------------------------------------------------------------
+
+describe('covers', () => {
+  test('passes when the sets match, in any order', () => {
+    expect(() => covers(['b', 'a'], ['a', 'b'])).not.toThrow();
+  });
+
+  test('reports what the document is missing', () => {
+    expect(() => covers(['a'], ['a', 'b', 'c'])).toThrow('missing entry: b; missing entry: c');
+  });
+
+  test('reports what the document invented', () => {
+    expect(() => covers(['a', 'z'], ['a'])).toThrow('unexpected entry: z');
+  });
+
+  test('reports both directions at once', () => {
+    expect(() => covers(['a', 'z'], ['a', 'b'])).toThrow(
+      'missing entry: b; unexpected entry: z',
+    );
+  });
+
+  test('uses custom messages and a noun', () => {
+    expect(() =>
+      covers([], ['transfer'], {
+        noun: 'method',
+        missing: (m) => `${m} exists but is undocumented`,
+      }),
+    ).toThrow('transfer exists but is undocumented');
+
+    expect(() => covers([], ['x'], { noun: 'widget' })).toThrow('missing widget: x');
+  });
+
+  test('either direction can be switched off', () => {
+    expect(() => covers(['a'], ['a', 'b'], { missing: false })).not.toThrow();
+    expect(() => covers(['a', 'z'], ['a'], { extra: false })).not.toThrow();
+  });
+
+  test('flags a key the document lists twice', () => {
+    expect(() => covers(['a', 'a'], ['a'])).toThrow('duplicate entry: a (listed 2 times)');
+    expect(() => covers(['a', 'a'], ['a'], { duplicates: false })).not.toThrow();
+  });
+
+  test('catches drift the per-element handler cannot see', async () => {
+    verify.reset();
+    // Every documented row is correct, but one is absent entirely.
+    verify.table('rates', (row) => {
+      expect(['DK', 'DE']).toContain(row['Code'] as string);
+    });
+    verify.table.all('rates', (table) => {
+      covers(table.rows.map((r) => r['Code'] as string), ['DK', 'DE', 'GB'], { noun: 'country' });
+    });
+
+    const p = parseMarkdown(
+      '> 🛠️ **Verified Data:** `rates`\n\n| Code |\n| ---- |\n| DK |\n| DE |\n',
+      't.md',
+    );
+    const run = await runParsed(p, { links: false });
+
+    expect(run.anchors[0]!.cases.filter((x) => x.status === 'passed')).toHaveLength(2);
+    expect(run.anchors[0]!.cases.find((x) => x.status === 'failed')).toMatchObject({
+      name: 'whole table',
+      error: 'missing country: GB',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reference checking
+// ---------------------------------------------------------------------------
+
+describe('references', () => {
+  const fixture = async (body: string, fn: (path: string) => Promise<void>) => {
+    const path = `examples/.tmp-ref-${Math.random().toString(36).slice(2)}.md`;
+    await Bun.write(path, body);
+    clearReferenceCache();
+    try {
+      await fn(path);
+    } finally {
+      await Bun.file(path).delete();
+      clearReferenceCache();
+    }
+  };
+
+  const check = async (body: string) => {
+    let problems: Awaited<ReturnType<typeof checkReferences>> = [];
+    await fixture(body, async (path) => {
+      problems = await checkReferences(parseMarkdown(await Bun.file(path).text(), path));
+    });
+    return problems;
+  };
+
+  test('accepts a link to a file that exists', async () => {
+    expect(await check('See [code](./checkout.ts).\n')).toEqual([]);
+  });
+
+  test('flags a link to a file that does not', async () => {
+    const [p] = await check('See [the appendix](./nope.md).\n');
+    expect(p!.message).toBe('broken link: ./nope.md (no such file)');
+    expect(p!.line).toBe(1);
+    expect(p!.column).toBe(5);
+  });
+
+  test('leaves external links alone', async () => {
+    expect(await check('[a](https://example.com) [b](mailto:x@y.z) [c](//cdn/x.js)\n')).toEqual([]);
+  });
+
+  test('checks a fragment-linked symbol, and suggests a near miss', async () => {
+    const [p] = await check('[`calculateTotals`](./checkout.ts#calculateTotals)\n');
+    expect(p!.message).toBe(
+      'broken symbol: ./checkout.ts#calculateTotals (no export named `calculateTotals`) (did you mean `calculateTotal`?)',
+    );
+  });
+
+  test('accepts a symbol that exists', async () => {
+    expect(await check('[fn](./checkout.ts#calculateTotal)\n')).toEqual([]);
+  });
+
+  test('symbol checking can be switched off', async () => {
+    let problems: Awaited<ReturnType<typeof checkReferences>> = [];
+    await fixture('[x](./checkout.ts#nope)\n', async (path) => {
+      problems = await checkReferences(parseMarkdown(await Bun.file(path).text(), path), {
+        symbols: false,
+      });
+    });
+    expect(problems).toEqual([]);
+  });
+
+  test('checks in-document anchors', async () => {
+    expect(await check('# Order Totals\n\n[go](#order-totals)\n')).toEqual([]);
+
+    const [p] = await check('# Order Totals\n\n[go](#order-total)\n');
+    expect(p!.message).toBe('broken anchor: #order-total (did you mean `order-totals`?)');
+  });
+
+  test('checks anchors into another markdown file', async () => {
+    expect(await check('[x](./spec.md#settlement)\n')).toEqual([]);
+    const [p] = await check('[x](./spec.md#nonexistent-heading)\n');
+    expect(p!.message).toMatch(/broken anchor: \.\/spec\.md#nonexistent-heading \(no such heading\)/);
+  });
+
+  test('accepts a reference whose definition resolves', async () => {
+    expect(await check('See [the thing][ok].\n\n[ok]: ./checkout.ts\n')).toEqual([]);
+  });
+
+  test('flags a definition pointing at a missing file', async () => {
+    const [p] = await check('See [the thing][ok].\n\n[ok]: ./nope.md\n');
+    expect(p!.message).toBe('broken link: ./nope.md (no such file)');
+    expect(p!.line).toBe(3);
+  });
+
+  test('a reference with no definition is invisible to the AST', async () => {
+    // CommonMark leaves `[x][missing]` as literal text, so there is no node to
+    // flag -- but a reader sees the broken brackets, which is its own warning.
+    expect(await check('See [the thing][missing].\n')).toEqual([]);
+  });
+
+  test('checks images too', async () => {
+    const [p] = await check('![diagram](./missing.png)\n');
+    expect(p!.message).toBe('broken link: ./missing.png (no such file)');
+  });
+
+  test('a broken reference makes the run fail', async () => {
+    await fixture('[gone](./nope.md)\n', async (path) => {
+      verify.reset();
+      const run = await runParsed(parseMarkdown(await Bun.file(path).text(), path));
+      expect(run.ok).toBe(false);
+      expect(run.problems[0]!.message).toMatch(/broken link/);
+    });
+  });
+
+  test('in-memory documents are not link checked', async () => {
+    const p = parseMarkdown('[gone](./nope.md)\n', '<memory>');
+    expect(await checkReferences(p)).toEqual([]);
+  });
+});
+
+describe('heading slugs', () => {
+  test('matches GitHub for punctuation and case', () => {
+    expect(slugify('Order Totals')).toBe('order-totals');
+    expect(slugify('Tax & Fees (2024)')).toBe('tax--fees-2024');
+    expect(slugify('  Spaced   Out  ')).toBe('spaced---out');
+  });
+
+  test('disambiguates repeated headings', () => {
+    const tree = parseMarkdown('# Notes\n\n# Notes\n\n# Notes\n', 't.md').tree;
+    expect([...headingSlugs(tree)]).toEqual(['notes', 'notes-1', 'notes-2']);
+  });
+
+  test('reads through inline formatting', () => {
+    const tree = parseMarkdown('## The `covers` helper\n', 't.md').tree;
+    expect([...headingSlugs(tree)]).toEqual(['the-covers-helper']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -501,6 +790,25 @@ describe('cli', () => {
     const statuses = data.files[0].anchors.map((a: any) => a.status);
     expect(statuses.filter((s: string) => s === 'failed')).toHaveLength(1);
     expect(statuses.filter((s: string) => s === 'skipped')).toHaveLength(3);
+  });
+
+  test('--json carries reference problems', async () => {
+    const r = await run([BROKEN, '--json']);
+    const messages = JSON.parse(r.stdout).files[0].problems.map((x: any) => x.message);
+    expect(messages).toContainEqual(expect.stringContaining('broken symbol: ./checkout.ts#calculateTotals'));
+    expect(messages).toContainEqual('broken link: ./appendix.md (no such file)');
+  });
+
+  test('--no-links skips reference checking', async () => {
+    const r = await run([BROKEN, '--no-links', '--json']);
+    expect(JSON.parse(r.stdout).files[0].problems).toEqual([]);
+  });
+
+  test('a clean document with symbol links passes end to end', async () => {
+    const r = await run([SPEC, '--json']);
+    const data = JSON.parse(r.stdout);
+    expect(data.ok).toBe(true);
+    expect(data.files[0].problems).toEqual([]);
   });
 
   test('--write annotates the file in place', async () => {
