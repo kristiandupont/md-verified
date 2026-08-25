@@ -1,0 +1,27 @@
+{
+  "name": "md-verified",
+  "version": "0.1.0",
+  "module": "src/index.ts",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/mdast": "^4.0.4",
+    "@types/unist": "^3.0.3",
+    "typescript": "^5.9.2"
+  },
+  "bin": {
+    "md-verified": "./check.ts"
+  },
+  "description": "Executable specifications from beautiful, native Markdown.",
+  "scripts": {
+    "check": "bun run check.ts",
+    "test": "bun test",
+    "demo": "bun run check.ts examples/spec.md",
+    "demo:fail": "bun run check.ts examples/broken.md --report"
+  },
+  "type": "module",
+  "dependencies": {
+    "mdast-util-from-markdown": "^2.0.3",
+    "micromark-extension-gfm-table": "^2.1.1",
+    "micromark-extension-gfm-task-list-item": "^2.1.0"
+  }
+}
