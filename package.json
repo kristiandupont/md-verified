@@ -1,28 +1,68 @@
 {
   "name": "md-verified",
   "version": "0.1.0",
-  "module": "src/index.ts",
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@types/mdast": "^4.0.4",
-    "@types/unist": "^3.0.3",
-    "typescript": "^5.9.2"
-  },
-  "bin": {
-    "md-verified": "./check.ts"
-  },
   "description": "Executable specifications from beautiful, native Markdown.",
+  "license": "MIT",
+  "author": "Kristian Dupont",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kristiandupont/md-verified.git"
+  },
+  "homepage": "https://github.com/kristiandupont/md-verified#readme",
+  "bugs": {
+    "url": "https://github.com/kristiandupont/md-verified/issues"
+  },
+  "keywords": [
+    "markdown",
+    "documentation",
+    "specification",
+    "testing",
+    "bdd",
+    "bun",
+    "mermaid"
+  ],
+  "type": "module",
+  "bin": {
+    "md-verified": "./dist/check.js"
+  },
+  "main": "./dist/src/index.js",
+  "module": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
   "scripts": {
     "check": "bun run check.ts",
     "test": "bun test",
     "demo": "bun run check.ts examples/spec.md",
-    "docs": "bun run check.ts README.md docs/*.md examples/spec.md",
-    "demo:fail": "bun run check.ts examples/broken.md --report"
+    "docs": "bun run check.ts README.md 'docs/*.md' examples/spec.md",
+    "demo:fail": "bun run check.ts examples/broken.md --report",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun run build && bun test",
+    "typecheck": "tsc --noEmit",
+    "ci": "bun run typecheck && bun test && bun run build && bun run docs"
   },
-  "type": "module",
   "dependencies": {
     "mdast-util-from-markdown": "^2.0.3",
     "micromark-extension-gfm-table": "^2.1.1",
-    "micromark-extension-gfm-task-list-item": "^2.1.0"
+    "micromark-extension-gfm-task-list-item": "^2.1.0",
+    "typescript": "^5.9.2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/mdast": "^4.0.4",
+    "@types/unist": "^3.0.3"
   }
 }

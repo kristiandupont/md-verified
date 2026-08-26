@@ -79,7 +79,9 @@ function register(id: string, kind: AnchorKind, mode: HandlerMode, fn: Function)
   const key = `${id}:${mode}`;
   if (registry.has(key)) {
     throw new Error(
-      `verify: \`${id}\` already has a ${kind}.${mode} handler; register it once`,
+      `verify: \`${id}\` already has a ${kind}.${mode} handler.\n` +
+        `Anchor ids are unique per *document*, not per project, so two documents may both use \`${id}\`. ` +
+        `If that is what happened, load each document with loadDocument() rather than importing their glue files into one process.`,
     );
   }
   registry.set(key, { id, kind, mode, fn: fn as Registration['fn'] });
@@ -126,7 +128,5 @@ export function registrations(): Registration[] {
   return [...registry.values()];
 }
 
-/** Throw with `message` unless `condition` holds. */
-export function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
+// Assertions live in `assertions.ts`; re-exported here for convenience.
+export { assert, equals, oneOf } from './assertions.ts';

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run build
+
+      # The documentation is part of the build: this fails on drift, on a
+      # broken link or symbol, and on a review whose code has moved.
+      - name: Verify documentation
+        run: bun run docs
+
+      # The drifted example must keep failing. If it ever passes, the failure
+      # path has quietly stopped working.
+      - name: Check the failure path still fails
+        run: |
+          if bun run check.ts examples/broken.md > /dev/null 2>&1; then
+            echo "examples/broken.md passed, but it is supposed to fail"
+            exit 1
+          fi

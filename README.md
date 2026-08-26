@@ -19,6 +19,17 @@ already use. A blockquote above each asset registers it with the test runner:
 The blockquote renders as a callout. The table renders as a table. Nothing in
 the document is inert markup that only a tool understands.
 
+### Install
+
+```
+bun add -d md-verified
+bunx md-verified 'docs/**/*.md'
+```
+
+Bun only — the package uses Bun's runtime APIs and is not built for Node.
+
+Or from a clone:
+
 ```
 bun install
 bun run check.ts examples/spec.md
@@ -85,6 +96,45 @@ with `verify.type()`.
 Without a `Schema:` line, cells arrive as the raw text — which is what you want
 when the document's exact formatting is part of the contract.
 
+## Project layout
+
+Put documents wherever you like — beside the code they describe, or in a `docs/`
+tree. The tool does not care. Your `tsconfig.json` does, and it fails in a
+different way for each.
+
+**The rule: treat `.verify.ts` exactly like `.test.ts`.** It is TypeScript that
+should be *checked* but not *shipped*, which is a problem your project has
+already solved once.
+
+Concretely, two configs — a wide one for checking and the editor, a narrow one
+for building:
+
+```jsonc
+// tsconfig.json — what gets typechecked
+{ "compilerOptions": { "noEmit": true }, "include": ["src", "docs"] }
+
+// tsconfig.build.json — what gets compiled
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "outDir": "dist", "rootDir": "src" },
+  "include": ["src"],
+  "exclude": ["**/*.verify.ts", "**/*.test.ts"]
+}
+```
+
+Without that split you hit one of these:
+
+| Layout | What goes wrong |
+| --- | --- |
+| `docs/` beside `src/`, `"include": ["src"]` | Glue is **never typechecked**. A real type error in a handler is invisible — Bun strips types, so the document still passes. |
+| `docs/` added to `include`, with `"rootDir": "src"` | `TS6059: File 'docs/x.verify.ts' is not under 'rootDir'`. |
+| Co-located `src/**/*.verify.ts` | Typechecked correctly, but the glue **compiles into your production build** (`dist/billing/billing.verify.js`). |
+
+The first is the dangerous one, because nothing tells you.
+
+Glue can import application code however the rest of your project does —
+`tsconfig` path aliases work, since Bun reads them.
+
 ## Glue code
 
 ```ts
@@ -110,6 +160,33 @@ verify.list('settlementRules', (item) => {
 
 Return normally to pass, throw to fail. Any assertion library works, including
 none.
+
+### Assertions
+
+A failure message here is not a test log — it is **written into the Markdown
+file** and read as documentation. Terminal-shaped output reads badly there:
+
+```
+<!-- ERROR: row 1: expect(received).toBe(expected)
+     Expected: 15
+     Received: 16 -->
+
+<!-- ERROR: row 1: total: expected 15, got 16 -->
+```
+
+So the built-ins stay few, and each produces one self-contained line phrased in
+terms of the claim:
+
+| | |
+| --- | --- |
+| `assert(cond, message)` | the escape hatch — use it whenever you can say it better |
+| `equals(actual, expected, what?)` | `total: expected 16, got 15` |
+| `oneOf(value, allowed, what?)` | `status: "archived" is not one of active, paused` |
+| `covers(documented, actual, opts?)` | see [Completeness](#completeness) |
+
+Third-party libraries keep working — a handler fails by throwing and that is
+not going away. Multi-line messages keep their structure in the document rather
+than being flattened onto one line.
 
 | Registration | Handler receives |
 | --- | --- |
@@ -199,7 +276,7 @@ together:
 ```markdown
 > 👁️ **Reviewed:** `settlement`
 > **Covers:** `../src/checkout.ts#paymentMethod`
-> **Digest:** `3aaced165261`
+> **Digest:** `1:3aaced165261`
 ```
 
 When `paymentMethod` changes, the digest stops matching and the section is
@@ -209,6 +286,13 @@ or pretending prose can be executed.
 
 `--stamp` records the digest. It is **separate from `--write` on purpose**: a
 stamp applied as a side effect of a normal run would attest to nothing.
+
+The `1:` prefix is the digest format version. It exists so that a future change
+to the algorithm can be reported as "re-stamp needed" rather than as "the code
+changed", which would be a lie and would train people to stamp blindly.
+
+Digests ignore line endings, so a mixed Windows/Unix team does not see
+everything go stale.
 
 Point `Covers:` at a **symbol** rather than a whole file. A file-level target is
 invalidated by every unrelated edit in that file, and a review that cries wolf
@@ -264,7 +348,7 @@ Three properties this relies on, all covered by the test suite:
 ## CLI
 
 ```
-bun run check.ts <file.md> [...] [options]
+md-verified <file.md|glob> [...] [options]
 
   --glue <path>   Glue module to load
   --write, -w     Fold results back into the file
@@ -301,20 +385,37 @@ handler is never run against a table that is silently missing rows.
 
 ## Under `bun test`
 
-`planCases()` expands a document into cases without running them, so Bun's test
-runner can own scheduling and reporting — one native test per table row:
+`loadDocument()` expands a document into cases without running them, so Bun's
+test runner can own scheduling and reporting — one native test per table row:
 
 ```ts
-for (const anchor of parsed.anchors) {
-  describe(anchor.id, () => {
-    for (const kase of planCases(anchor, file).cases) {
-      test(kase.name, () => kase.run());
+import { describe, test, expect } from 'bun:test';
+import { loadDocument } from 'md-verified';
+
+for (const file of ['docs/pricing.md', 'docs/limits.md']) {
+  const doc = await loadDocument(file);
+
+  describe(doc.file, () => {
+    test('references resolve', () => expect(doc.problems).toEqual([]));
+    test('reviews current', () =>
+      expect(doc.reviews.filter((r) => r.status === 'failed')).toEqual([]));
+
+    for (const suite of doc.suites) {
+      describe(suite.id, () => {
+        for (const c of suite.cases) test(c.name, () => c.run());
+      });
     }
   });
 }
 ```
 
-See [`spec.test.ts`](./spec.test.ts).
+Use `loadDocument` rather than importing glue files directly. Anchor ids are
+unique per *document*, and Bun shares module state across test files, so two
+documents that both use `prices` would otherwise collide. `loadDocument`
+isolates the registry per document; cases keep their own handler afterwards.
+
+`planCases()` is the lower-level primitive if you need it. See
+[`spec.test.ts`](./spec.test.ts).
 
 ## Layout
 
@@ -327,6 +428,7 @@ See [`spec.test.ts`](./spec.test.ts).
 | [`src/report.ts`](./src/report.ts) | Terminal output and the Markdown rewrite |
 | [`src/references.ts`](./src/references.ts) | Link, anchor and symbol checking |
 | [`src/covers.ts`](./src/covers.ts) | Set assertions for completeness |
+| [`src/assertions.ts`](./src/assertions.ts) | `assert`, `equals`, `oneOf` |
 | [`src/reviews.ts`](./src/reviews.ts) | Review staleness and digests |
 | [`src/symbols.ts`](./src/symbols.ts) | Static symbol lookup, via the TS compiler API |
 | [`src/coerce.ts`](./src/coerce.ts) | `Schema:` value types |
@@ -342,7 +444,9 @@ See [`spec.test.ts`](./spec.test.ts).
   diagrams parse only as far as their `A --> B` statements go.
 - Glue modules are loaded with a cache-busting query string, so a long-lived
   process re-registering the same file will accumulate module instances.
-- Anchor ids must be unique per file; the CLI clears the registry between files.
+- Anchor ids must be unique per document. The CLI clears the registry between
+  files; in-process, use `loadDocument()`.
+- Bun only. The package uses Bun's runtime APIs and is not built for Node.
 - Symbol lookup reads files rather than importing them, so nothing in the
   checked project is executed and type-only exports are visible. The trade-off
   is that `export * from './x'` is not followed.

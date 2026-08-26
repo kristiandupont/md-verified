@@ -6,7 +6,13 @@
  *   bun run check.ts examples/*.md --write
  *   bun run check.ts examples/spec.md --json
  */
-import { basename, dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { basename, dirname, extname, resolve } from 'node:path';
+
+/** Where documents live when the caller does not say. */
+const DEFAULT_DOCS = '**/*.md';
+/** Never walk into these while globbing. */
+const IGNORED_DIRS = /(^|\/)(node_modules|\.git|dist|build|coverage|\.next|out)(\/|$)/;
 
 import { loadGlue, resolveGlue, runFile, type RunOptions } from './src/runner.ts';
 import { c, formatRun, rewriteFromRun, setColor } from './src/report.ts';
@@ -31,7 +37,10 @@ const USAGE = `
 md-verified - executable specifications from native Markdown
 
 USAGE
-  bun run check.ts <file.md> [...] [options]
+  md-verified <file.md|glob> [...] [options]
+
+  Globs are expanded by the tool, so quoting them is safe:
+  md-verified 'docs/**/*.md'
 
 OPTIONS
   --glue <path>     Glue module to load. Defaults to a <!-- verify: --> hint in
@@ -44,7 +53,8 @@ OPTIONS
                     prose as read. Deliberately separate from --write.
   --covering <path> Instead of checking, list the reviews that cover <path>.
                     Answers "which documents describe this code?" without
-                    putting a marker in the code itself.
+                    putting a marker in the code itself. Searches the documents
+                    given, or **/*.md when none are.
   --no-links        Skip link, anchor and symbol checking.
   --no-reviews      Skip review staleness checking.
   --no-symbols      Check links, but do not import modules to check symbols.
@@ -99,65 +109,48 @@ function parseArgs(argv: string[]): Flags {
   }
   return flags;
 }
-
 async function main(): Promise<number> {
   const flags = parseArgs(process.argv.slice(2));
 
-  if (flags.help || flags.files.length === 0) {
+  if (flags.help) {
     console.log(USAGE);
-    return flags.help ? 0 : 1;
+    return 0;
   }
   // JSON goes to stdout alone, so it stays pipeable.
   if (flags.json) setColor(false);
 
-  if (flags.covering) return await listCovering(flags);
+  if (flags.covering) {
+    // Answering "which docs describe this file?" should not require the caller
+    // to remember where the documents live. Finding nothing is an answer here,
+    // not an error.
+    const searched = await expand(flags.files.length ? flags.files : [DEFAULT_DOCS]);
+    return await listCovering(flags, searched.files);
+  }
 
+  if (flags.files.length === 0) {
+    console.log(USAGE);
+    return 1;
+  }
+
+  const { files, unmatched } = await expand(flags.files);
   const runs: RunResult[] = [];
-  let failures = 0;
 
-  for (const file of flags.files) {
-    // Each document gets a clean registry, so ids only need to be unique per file.
-    verify.reset();
+  // A pattern that matches nothing is a failure, not a quiet no-op: in CI it
+  // would otherwise turn a moved or misspelled document path into a pass.
+  let failures = unmatched.length;
+  for (const pattern of unmatched) {
+    console.error(`md-verified: no files match ${pattern}`);
+  }
 
-    const source = await Bun.file(file).text();
-    const gluePath = resolveGlue(file, flags.glue, source);
-
-    // Glue is only required by anchors. A document that is prose plus reviews
-    // has nothing to execute, and should not be nagged for a handler file.
-    if (!gluePath && !flags.reset && parseMarkdown(source, file).anchors.length > 0) {
-      console.error(
-        `${basename(file)}: no glue code found. Add a <!-- verify: ./x.verify.ts --> hint, ` +
-        `create ${basename(file, '.md')}.verify.ts next to it, or pass --glue.`,
-      );
+  for (const file of files) {
+    try {
+      const run = await checkOne(file, flags);
+      runs.push(run);
+      if (!run.ok) failures++;
+    } catch (err) {
+      // One unusable document must not stop the others being reported.
+      console.error(`${file}: ${(err as Error).message}`);
       failures++;
-      continue;
-    }
-    if (gluePath) await loadGlue(gluePath);
-
-    const { run, parsed } = await runFile(file, {
-      only: flags.only!.length ? flags.only : undefined,
-      bail: flags.bail,
-      timeout: flags.timeout,
-      links: flags.links,
-      symbols: flags.symbols,
-      reviews: flags.reviews,
-    });
-    runs.push(run);
-    if (!run.ok) failures++;
-
-    if (flags.write || flags.report || flags.reset || flags.stamp) {
-      const next = rewriteFromRun(run, parsed, { reset: flags.reset, stamp: flags.stamp });
-
-      if (flags.report) {
-        if (!flags.json) console.log(next);
-      } else if (next !== run.source) {
-        await Bun.write(file, next);
-      }
-    }
-
-    if (!flags.json && !flags.report) {
-      console.log(formatRun(run, { verbose: flags.verbose }));
-      console.log('');
     }
   }
 
@@ -196,6 +189,94 @@ async function main(): Promise<number> {
   return failures === 0 ? 0 : 1;
 }
 
+/** Check one document. Throws only when the document cannot be run at all. */
+async function checkOne(file: string, flags: Flags): Promise<RunResult> {
+  // Each document gets a clean registry, so ids only need to be unique per file.
+  verify.reset();
+
+  if (!existsSync(file)) throw new Error('no such file');
+
+  const source = await Bun.file(file).text();
+  const gluePath = resolveGlue(file, flags.glue, source);
+
+  // Glue is only required by anchors. A document that is prose plus reviews
+  // has nothing to execute, and should not be nagged for a handler file.
+  if (!gluePath && !flags.reset && parseMarkdown(source, file).anchors.length > 0) {
+    throw new Error(
+      `no glue code found. Add a <!-- verify: ./x.verify.ts --> hint, ` +
+        `create ${basename(file, extname(file))}.verify.ts next to it, or pass --glue.`,
+    );
+  }
+  if (gluePath) await loadGlue(gluePath);
+
+  const { run, parsed } = await runFile(file, {
+    only: flags.only!.length ? flags.only : undefined,
+    bail: flags.bail,
+    timeout: flags.timeout,
+    links: flags.links,
+    symbols: flags.symbols,
+    reviews: flags.reviews,
+  });
+
+  if (flags.write || flags.report || flags.reset || flags.stamp) {
+    const next = rewriteFromRun(run, parsed, { reset: flags.reset, stamp: flags.stamp });
+
+    if (flags.report) {
+      if (!flags.json) console.log(next);
+    } else if (next !== run.source) {
+      await Bun.write(file, next);
+    }
+  }
+
+  if (!flags.json && !flags.report) {
+    console.log(formatRun(run, { verbose: flags.verbose }));
+    console.log('');
+  }
+
+  return run;
+}
+
+/**
+ * Expand the file arguments, globbing any that need it.
+ *
+ * Shells do not always expand a pattern -- it may be quoted, or there may be no
+ * matching file in the current directory -- and passing `docs/*.md` through
+ * verbatim produced a raw `ENOENT` on the literal string.
+ */
+async function expand(patterns: string[]): Promise<{ files: string[]; unmatched: string[] }> {
+  const found: string[] = [];
+  const unmatched: string[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of patterns) {
+    if (!/[*?[\]{}]/.test(pattern)) {
+      if (!seen.has(pattern)) {
+        seen.add(pattern);
+        found.push(pattern);
+      }
+      continue;
+    }
+
+    const matches: string[] = [];
+    for await (const match of new Bun.Glob(pattern).scan({ dot: false })) {
+      if (IGNORED_DIRS.test(match)) continue;
+      matches.push(match);
+    }
+
+    if (matches.length === 0) {
+      unmatched.push(pattern);
+      continue;
+    }
+    for (const match of matches.sort()) {
+      if (seen.has(match)) continue;
+      seen.add(match);
+      found.push(match);
+    }
+  }
+
+  return { files: found, unmatched };
+}
+
 /**
  * The reverse of `Covers:`.
  *
@@ -203,11 +284,12 @@ async function main(): Promise<number> {
  * question "which docs describe this file?" can be answered by reading them --
  * no marker in the source, nothing extra to keep in sync.
  */
-async function listCovering(flags: Flags): Promise<number> {
+async function listCovering(flags: Flags, files: string[]): Promise<number> {
   const target = resolve(flags.covering!);
   const hits: Array<{ file: string; id: string; line: number; target: string }> = [];
 
-  for (const file of flags.files) {
+  for (const file of files) {
+    if (!existsSync(file)) continue;
     const parsed = parseMarkdown(await Bun.file(file).text(), file);
     const dir = dirname(resolve(file));
 
@@ -224,7 +306,9 @@ async function listCovering(flags: Flags): Promise<number> {
   if (flags.json) {
     console.log(JSON.stringify({ covering: flags.covering, reviews: hits }, null, 2));
   } else if (hits.length === 0) {
-    console.log(`No review covers ${flags.covering}.`);
+    console.log(
+      `No review covers ${flags.covering} (searched ${files.length} document${files.length === 1 ? '' : 's'}).`,
+    );
   } else {
     console.log(`Reviews covering ${flags.covering}:`);
     for (const hit of hits) {

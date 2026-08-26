@@ -10,17 +10,22 @@ import { describe, expect, test, beforeAll } from 'bun:test';
 import { resolve } from 'node:path';
 
 import {
+  assert,
   checkReferences,
   checkReviews,
   clearSymbolCache,
   clearReferenceCache,
   coerce,
   covers,
+  digestOf,
+  equals,
   headingSlugs,
+  oneOf,
   findGlueHint,
   parseMarkdown,
   parseMermaid,
   parseSchema,
+  loadDocument,
   planCases,
   rewriteMarkdown,
   runParsed,
@@ -456,15 +461,54 @@ describe('state reporting', () => {
   test('an error message cannot break out of its comment', async () => {
     verify.reset();
     verify.table('evil', () => {
-      throw new Error('closes early --> and opens <!-- again\nacross lines');
+      throw new Error('closes early --> and opens <!-- again\n\nacross lines');
     });
     const p = parseMarkdown('> 🛠️ **Verified Data:** `evil`\n\n| A |\n| - |\n| 1 |\n', 'e.md');
-    const run = await runParsed(p);
+    const run = await runParsed(p, { links: false });
     const out = rewriteMarkdown(p.source, p.anchors, run.anchors);
 
     const comments = out.match(/<!--[\s\S]*?-->/g) ?? [];
     expect(comments).toHaveLength(1);
-    expect(comments[0]).not.toContain('\n');
+
+    // The delimiters must appear exactly once each, at the edges, and the body
+    // must contain no blank line -- a blank line would end the HTML block and
+    // spill the rest of the message into the document as visible text.
+    const body = comments[0]!.slice('<!--'.length, -'-->'.length);
+    expect(body).not.toContain('-->');
+    expect(body).not.toContain('<!--');
+    expect(body).not.toMatch(/\n\s*\n/);
+
+    // And it must still parse as a single comment the tool owns.
+    const again = parseMarkdown(out, 'e.md');
+    expect(again.anchors).toHaveLength(1);
+    expect(again.problems).toEqual([]);
+  });
+
+  test('a multi-line message keeps its shape in the document', async () => {
+    verify.reset();
+    verify.table('multi', () => {
+      throw new Error('expect(received).toBe(expected)\n\nExpected: 15\nReceived: 16');
+    });
+    const p = parseMarkdown('> 🛠️ **Verified Data:** `multi`\n\n| A |\n| - |\n| 1 |\n', 'm.md');
+    const run = await runParsed(p, { links: false });
+    const out = rewriteMarkdown(p.source, p.anchors, run.anchors);
+
+    expect(out).toContain('<!-- ERROR: row 1: expect(received).toBe(expected)');
+    expect(out).toContain('     Expected: 15');
+    expect(out).toContain('     Received: 16 -->');
+  });
+
+  test('a very long message is truncated rather than flooding the file', async () => {
+    verify.reset();
+    verify.table('long', () => {
+      throw new Error(Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'));
+    });
+    const p = parseMarkdown('> 🛠️ **Verified Data:** `long`\n\n| A |\n| - |\n| 1 |\n', 'l.md');
+    const run = await runParsed(p, { links: false });
+    const out = rewriteMarkdown(p.source, p.anchors, run.anchors);
+
+    expect(out).toContain('more line(s)');
+    expect(out.split('\n').filter((l) => l.includes('line ')).length).toBeLessThan(10);
   });
 });
 
@@ -749,6 +793,64 @@ describe('heading slugs', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Assertions
+// ---------------------------------------------------------------------------
+
+describe('assertions', () => {
+  test('equals passes on matching values', () => {
+    expect(() => equals(16, 16)).not.toThrow();
+    expect(() => equals('a', 'a')).not.toThrow();
+    expect(() => equals([1, 2], [1, 2])).not.toThrow();
+    expect(() => equals({ a: 1 }, { a: 1 })).not.toThrow();
+    expect(() => equals(new Date('2026-01-01'), new Date('2026-01-01'))).not.toThrow();
+  });
+
+  test('equals reads as documentation, on one line', () => {
+    expect(() => equals(15, 16, 'total')).toThrow('total: expected 16, got 15');
+    expect(() => equals(15, 16)).toThrow('expected 16, got 15');
+    expect(() => equals('b', 'a', 'tier')).toThrow('tier: expected "a", got "b"');
+  });
+
+  test('equals compares objects structurally', () => {
+    expect(() => equals({ a: 1 }, { a: 2 })).toThrow('expected {"a":2}, got {"a":1}');
+  });
+
+  test('equals truncates a value too large for a line', () => {
+    const big = { text: 'x'.repeat(200) };
+    const message = (() => {
+      try { equals(big, null); return ''; } catch (err) { return (err as Error).message; }
+    })();
+    expect(message).toContain('…');
+    expect(message.length).toBeLessThan(160);
+    expect(message).not.toContain('\n');
+  });
+
+  test('oneOf names the options', () => {
+    expect(() => oneOf('active', ['active', 'paused'])).not.toThrow();
+    expect(() => oneOf('archived', ['active', 'paused'], 'status')).toThrow(
+      'status: "archived" is not one of active, paused',
+    );
+  });
+
+  test('assert stays the escape hatch', () => {
+    expect(() => assert(false, 'shipping is never taxed')).toThrow('shipping is never taxed');
+    expect(() => assert(true, 'nope')).not.toThrow();
+  });
+
+  test('a third-party assertion library still works', async () => {
+    verify.reset();
+    verify.table('third', () => {
+      // Anything that throws is a failure; that contract is not going away.
+      expect(1).toBe(2);
+    });
+    const p = parseMarkdown('> 🛠️ **Verified Data:** `third`\n\n| A |\n| - |\n| 1 |\n', 't.md');
+    const run = await runParsed(p, { links: false });
+    expect(run.anchors[0]!.status).toBe('failed');
+    expect(run.anchors[0]!.cases[0]!.error).toContain('expect');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reviews: staleness for the prose that cannot be executed
 // ---------------------------------------------------------------------------
 
@@ -823,7 +925,7 @@ describe('reviews', () => {
       const out = rewriteFromRun(result, parsed, { stamp: true });
 
       expect(out).toContain('> ✅ **Reviewed:** `thing`');
-      expect(out).toMatch(/> \*\*Digest:\*\* `[0-9a-f]{12}`/);
+      expect(out).toMatch(/> \*\*Digest:\*\* `1:[0-9a-f]{12}`/);
       expect(out).not.toContain('<!-- REVIEW:');
     });
   });
@@ -944,6 +1046,38 @@ describe('reviews', () => {
     });
   });
 
+  test('the digest ignores line endings', async () => {
+    const body = 'export function f() {\n  return 1;\n}\n';
+    await scratch(body, docWith(), async ({ doc, mod, edit }) => {
+      void mod;
+      const parsed = parseMarkdown(await Bun.file(doc).text(), doc);
+      // docWith covers `#covered`; this fixture exports `f`, so target the file.
+      const covers = parsed.reviews[0]!.covers.map((cover) => cover.split('#')[0]!);
+      const dir = 'examples';
+
+      const lf = digestOf(covers, dir);
+      await edit(body.replace(/\n/g, '\r\n'));
+      const crlf = digestOf(covers, dir);
+
+      expect(lf).toBe(crlf);
+    });
+  });
+
+  test('the digest carries a format version', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.digest).toMatch(/^1:[0-9a-f]{12}$/);
+    });
+  });
+
+  test('an older-format stamp says so, rather than blaming the code', async () => {
+    await scratch(MODULE, docWith('> **Digest:** `deadbeefcafe`'), async ({ doc }) => {
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.reason).toMatch(/older digest format/);
+      expect(result.reviews[0]!.reason).not.toMatch(/changed since/);
+    });
+  });
+
   test('review checking can be switched off', async () => {
     await scratch(MODULE, docWith(), async ({ doc }) => {
       const parsed = parseMarkdown(await Bun.file(doc).text(), doc);
@@ -967,6 +1101,59 @@ describe('reviews', () => {
       expect(stderr).not.toContain('no glue code found');
       expect(stdout).toContain('never stamped');
     });
+  });
+});
+
+describe('loadDocument', () => {
+  test('two documents may share an anchor id', async () => {
+    const seen: string[] = [];
+    (globalThis as any).__seen = seen;
+
+    const docs = ['examples/.tmp-a.md', 'examples/.tmp-b.md'];
+    const glue = ['examples/.tmp-a.verify.ts', 'examples/.tmp-b.verify.ts'];
+
+    // `prices` is not an unusual id. Both documents use it.
+    await Bun.write(docs[0]!, '<!-- verify: ./.tmp-a.verify.ts -->\n\n> 🛠️ **Verified Data:** `prices`\n\n| T |\n| - |\n| a |\n');
+    await Bun.write(docs[1]!, '<!-- verify: ./.tmp-b.verify.ts -->\n\n> 🛠️ **Verified Data:** `prices`\n\n| T |\n| - |\n| b |\n');
+    await Bun.write(glue[0]!, "import { verify } from '../src/index.ts';\nverify.table('prices', (row) => { (globalThis as any).__seen.push('A:' + row['T']); });\n");
+    await Bun.write(glue[1]!, "import { verify } from '../src/index.ts';\nverify.table('prices', (row) => { (globalThis as any).__seen.push('B:' + row['T']); });\n");
+
+    try {
+      const a = await loadDocument(docs[0]!, { links: false });
+      const b = await loadDocument(docs[1]!, { links: false });
+
+      // Loading B resets the registry; A's cases must still hold their own
+      // handler, and must not have been rebound to B's.
+      for (const c of a.suites[0]!.cases) await c.run();
+      for (const c of b.suites[0]!.cases) await c.run();
+
+      expect(seen).toEqual(['A:a', 'B:b']);
+    } finally {
+      for (const f of [...docs, ...glue]) await Bun.file(f).delete();
+      delete (globalThis as any).__seen;
+    }
+  });
+
+  test('reports references and reviews alongside the cases', async () => {
+    const doc = 'examples/.tmp-c.md';
+    await Bun.write(doc, '# C\n\n[gone](./nowhere.md)\n');
+    try {
+      const loaded = await loadDocument(doc);
+      expect(loaded.suites).toEqual([]);
+      expect(loaded.problems[0]!.message).toMatch(/broken link/);
+    } finally {
+      await Bun.file(doc).delete();
+    }
+  });
+
+  test('a document with anchors but no glue fails loudly', async () => {
+    const doc = 'examples/.tmp-d.md';
+    await Bun.write(doc, '> 🛠️ **Verified Data:** `x`\n\n| A |\n| - |\n| 1 |\n');
+    try {
+      expect(loadDocument(doc, { links: false })).rejects.toThrow(/no glue code found/);
+    } finally {
+      await Bun.file(doc).delete();
+    }
   });
 });
 
@@ -1155,6 +1342,54 @@ describe('cli', () => {
     const data = JSON.parse(r.stdout);
     expect(data.ok).toBe(true);
     expect(data.files[0].problems).toEqual([]);
+  });
+
+  test('expands globs itself, so quoting one is safe', async () => {
+    const r = await run(['examples/spec*.md', '--json']);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout).files.map((f: any) => f.file)).toEqual(['examples/spec.md']);
+  });
+
+  test('a glob that matches nothing fails rather than passing quietly', async () => {
+    const r = await run(['examples/*.markdown']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('no files match examples/*.markdown');
+  });
+
+  test('a missing file is named, and fails', async () => {
+    const r = await run(['examples/nope.md']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('examples/nope.md: no such file');
+  });
+
+  test('glue that throws on import names the glue file and the document', async () => {
+    const doc = 'examples/.tmp-badglue.md';
+    const glue = 'examples/.tmp-badglue.verify.ts';
+    await Bun.write(doc, '> 🛠️ **Verified Data:** `x`\n\n| A |\n| - |\n| 1 |\n');
+    await Bun.write(glue, "throw new Error('boom during import');\n");
+    try {
+      const r = await run([doc, SPEC]);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain(`${doc}: glue file ${glue} failed to load: boom during import`);
+      // The healthy document is still reported.
+      expect(r.stdout).toContain('4 passed');
+    } finally {
+      await Bun.file(doc).delete();
+      await Bun.file(glue).delete();
+    }
+  });
+
+  test('--covering searches **/*.md when given no documents', async () => {
+    const r = await run(['--covering', 'src/parser.ts']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('docs/anchor-reference.md');
+    expect(r.stdout).toContain('binding');
+  });
+
+  test('--covering says how many documents it searched when it finds none', async () => {
+    const r = await run(['--covering', 'src/covers.ts']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/No review covers src\/covers\.ts \(searched \d+ documents\)/);
   });
 
   test('--write annotates the file in place', async () => {

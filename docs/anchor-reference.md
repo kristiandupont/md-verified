@@ -13,7 +13,7 @@ otherwise drift the first time someone added to it.
 
 > ✅ **Reviewed:** `binding`
 > **Covers:** `../src/parser.ts#parseMarkdown`
-> **Digest:** `ab0e81b23ff8`
+> **Digest:** `1:ab0e81b23ff8`
 
 An anchor is a blockquote whose first line reads `**Verified <Label>:**`
 followed by an id in backticks. The runner takes the **next block-level node**

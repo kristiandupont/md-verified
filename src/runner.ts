@@ -6,17 +6,20 @@
  * `check.ts` is a thin wrapper so the same engine can be driven from
  * `bun test` (see `spec.test.ts`).
  */
-import { resolve, dirname, basename, extname, join } from 'node:path';
+import { resolve, dirname, basename, extname, join, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 
 import { findGlueHint, parseMarkdown } from './parser.ts';
 import { checkReferences } from './references.ts';
 import { checkReviews } from './reviews.ts';
-import { getRegistrations, type VerifyContext } from './framework.ts';
+import { getRegistrations, verify, type VerifyContext } from './framework.ts';
 import type {
   Anchor,
+  AnchorKind,
   AnchorResult,
   CaseResult,
+  ParseProblem,
+  ReviewResult,
   MermaidGraph,
   ParsedList,
   ParsedTable,
@@ -331,6 +334,92 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 // ---------------------------------------------------------------------------
+// loading a whole document
+// ---------------------------------------------------------------------------
+
+/** One anchor, expanded into the cases a test runner can schedule. */
+export interface DocumentSuite {
+  id: string;
+  kind: AnchorKind;
+  label: string;
+  line: number;
+  /** Set when the anchor has no handler. */
+  skipReason: string | null;
+  /** Set when the anchor fails as a whole, before any case runs. */
+  failReason: string | null;
+  cases: PlannedCase[];
+}
+
+export interface LoadedDocument {
+  file: string;
+  parsed: ParseResult;
+  suites: DocumentSuite[];
+  /** Parse problems and reference diagnostics, combined. */
+  problems: ParseProblem[];
+  reviews: ReviewResult[];
+}
+
+/**
+ * Load one document and everything needed to run it, in isolation.
+ *
+ * The registry is a module-level singleton, so two documents that happen to
+ * share an anchor id -- `prices` is not an unusual name -- collide if their
+ * glue files are simply imported into the same process. Bun shares module
+ * state across test files, so that is not hypothetical.
+ *
+ * This resets the registry, loads only this document's glue, and returns cases
+ * whose closures already hold their handler. A later `loadDocument` call may
+ * reset the registry again without disturbing them. Use this rather than
+ * importing glue directly when a process handles more than one document.
+ */
+export async function loadDocument(
+  file: string,
+  options: RunOptions & { glue?: string } = {},
+): Promise<LoadedDocument> {
+  const source = await Bun.file(file).text();
+
+  // Isolate: whatever a previous document registered is not ours.
+  verify.reset();
+
+  const parsed = parseMarkdown(source, file);
+
+  if (parsed.anchors.length > 0) {
+    const gluePath = resolveGlue(file, options.glue, source);
+    if (!gluePath) {
+      throw new Error(
+        `${file}: no glue code found. Add a <!-- verify: ./x.verify.ts --> hint, ` +
+          `create ${basename(file, extname(file))}.verify.ts next to it, or pass { glue }.`,
+      );
+    }
+    await loadGlue(gluePath);
+  }
+
+  const suites: DocumentSuite[] = parsed.anchors.map((anchor) => {
+    const plan = planCases(anchor, file);
+    return {
+      id: anchor.id,
+      kind: anchor.kind,
+      label: anchor.label,
+      line: anchor.line,
+      skipReason: plan.skipReason,
+      failReason: plan.failReason,
+      cases: plan.cases,
+    };
+  });
+
+  const references =
+    options.links === false ? [] : await checkReferences(parsed, { symbols: options.symbols });
+
+  return {
+    file,
+    parsed,
+    suites,
+    problems: [...parsed.problems, ...references],
+    reviews: checkReviews(parsed, { reviews: options.reviews }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // glue-code loading
 // ---------------------------------------------------------------------------
 
@@ -369,9 +458,23 @@ export function resolveGlue(mdPath: string, explicit?: string, source?: string):
   return null;
 }
 
-/** Import a glue module, bypassing the module cache so repeat runs re-register. */
+/**
+ * Import a glue module, bypassing the module cache so repeat runs re-register.
+ *
+ * A glue file that throws while loading is a common authoring mistake, and the
+ * bare error says nothing about which file it came from. Callers add the
+ * document; this adds the glue file and keeps the original as `cause`.
+ */
 export async function loadGlue(path: string): Promise<void> {
-  await import(`${path}?v=${Date.now()}`);
+  try {
+    await import(`${path}?v=${Date.now()}`);
+  } catch (err) {
+    const cause = err instanceof Error ? err : new Error(String(err));
+    throw new Error(
+      `glue file ${relative(process.cwd(), path)} failed to load: ${cause.message}`,
+      { cause },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

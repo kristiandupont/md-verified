@@ -39,7 +39,7 @@ const SUFFIX_RE = /\s*\((?:Failed|Passed|Skipped|Pending|Stale)[^)]*\)\s*$/i;
  * `<!-- verify: ./glue.ts -->` hint must survive a rewrite untouched, so only
  * our own `ERROR:` and `REVIEW:` comments match here.
  */
-const MANAGED_LINE_RE = /^[ \t]*<!--\s*(?:ERROR|REVIEW):[^\n]*?-->[ \t]*\r?\n?/gm;
+const MANAGED_LINE_RE = /^[ \t]*<!--\s*(?:ERROR|REVIEW):[\s\S]*?-->[ \t]*\r?\n?/gm;
 
 /** Most failures we will write into the document before summarising. */
 const MAX_COMMENTS = 8;
@@ -254,15 +254,35 @@ function commentsFor(result: AnchorResult | undefined): string[] {
   return lines;
 }
 
-/** Build one single-line comment that cannot break out of its own delimiters. */
+/** How many lines of a multi-line message we will write into a document. */
+const MAX_COMMENT_LINES = 6;
+
+/**
+ * Build one comment that cannot break out of its own delimiters.
+ *
+ * Single-line messages -- which is what the built-in assertions produce -- stay
+ * on one line. A message that genuinely has structure, typically from a
+ * third-party assertion library, keeps it: flattening a diff onto one line
+ * makes it unreadable in exactly the place people read it.
+ */
 function comment(tag: string, message: string): string {
-  const safe = String(message)
-    .replace(/\r?\n/g, ' \u23ce ')
-    .replace(/<!--/g, '&lt;!--')
-    .replace(/-->/g, '->>')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return `<!-- ${tag}: ${safe} -->`;
+  const safe = (text: string) =>
+    text.replace(/<!--/g, '&lt;!--').replace(/-->/g, '->>').replace(/[ \t]+/g, ' ').trim();
+
+  const lines = String(message)
+    .split(/\r?\n/)
+    .map(safe)
+    .filter(Boolean);
+
+  if (lines.length <= 1) return `<!-- ${tag}: ${lines[0] ?? 'failed'} -->`;
+
+  const kept = lines.slice(0, MAX_COMMENT_LINES);
+  if (lines.length > MAX_COMMENT_LINES) {
+    kept.push(`... ${lines.length - MAX_COMMENT_LINES} more line(s)`);
+  }
+  // A blank line would end the HTML block, so there are none: `filter(Boolean)`
+  // above drops them and every continuation line carries indentation.
+  return `<!-- ${tag}: ${kept[0]}\n${kept.slice(1).map((l) => `     ${l}`).join('\n')} -->`;
 }
 
 function rewriteGap(gap: string, comments: string[]): string {
@@ -331,12 +351,20 @@ export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): 
       `  ${MARK[a.status]!()} ${a.id}${counts} ${c.dim(`(${a.kind}, line ${a.line})`)}${reason}`,
     );
 
-    if (a.status === 'failed' && a.reason) out.push(`      ${c.red(a.reason)}`);
+    if (a.status === 'failed' && a.reason) {
+      for (const line of a.reason.split(/\r?\n/)) {
+        if (line.trim()) out.push(`      ${c.red(line.trim())}`);
+      }
+    }
 
     for (const cse of a.cases) {
       if (cse.status === 'failed') {
         const where = cse.line ? `:${cse.line}` : '';
-        out.push(`      ${c.dim(cse.name + where)}  ${c.red(cse.error ?? 'failed')}`);
+        const [first, ...rest] = (cse.error ?? 'failed').split(/\r?\n/);
+        out.push(`      ${c.dim(cse.name + where)}  ${c.red(first ?? 'failed')}`);
+        for (const line of rest) {
+          if (line.trim()) out.push(`        ${c.red(line.trim())}`);
+        }
         if (options.verbose && cse.stack) {
           out.push(...cse.stack.split('\n').slice(1, 4).map((l) => c.dim('        ' + l.trim())));
         }
@@ -349,7 +377,11 @@ export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): 
   for (const review of run.reviews) {
     const mark = review.status === 'passed' ? MARK.passed!() : MARK.failed!();
     out.push(`  ${mark} ${review.id} ${c.dim(`(review, line ${review.line})`)}`);
-    if (review.reason) out.push(`      ${c.red(review.reason)}`);
+    if (review.reason) {
+      for (const line of review.reason.split(/\r?\n/)) {
+        if (line.trim()) out.push(`      ${c.red(line.trim())}`);
+      }
+    }
   }
 
   const s = run.summary;

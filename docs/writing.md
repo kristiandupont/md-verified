@@ -12,6 +12,32 @@ actually read, and it carries the things that matter most and verify least.
 This page has no verified claims of its own. It makes no claims about code, so
 there is nothing here to bind.
 
+## When to write one at all
+
+Document on change, not on schedule. There are four moments worth writing at,
+and they have one thing in common: you understand the thing *right now*, so
+writing it down is nearly free.
+
+1. **You are adding a feature.** Write it while the context is loaded.
+2. **Something surprised you.** Whatever you had to reverse-engineer is exactly
+   what the next person will have to. This is the trigger that gets an old
+   codebase covered without ever scheduling an archaeology session.
+3. **Something broke because an assumption was undocumented.** Write the
+   assumption down.
+4. **You are about to delete or replace something.** Capture why it existed
+   before the reason leaves with it.
+
+The stop rule: **never write a document you did not have a reason to write
+today.**
+
+This is why "go and document the system" is a bad instruction, and why a sweep
+that finds every enum and tabulates it produces something worse than nothing.
+Those tables restate the code. They carry no *why*, and the why is the only
+part that cannot be recovered later by reading the source.
+
+If you are documenting something you did not write, see
+[the honest gap](#the-honest-gap) below before you invent a reason for anything.
+
 ## Write the prose first
 
 Explain the thing to a person. Say what it does, why it works that way, and
@@ -101,6 +127,30 @@ Put reviews on the paragraphs that would embarrass you if they went stale, not
 on every heading. Three meaningful reviews beat twenty that everyone re-stamps
 in a batch.
 
+## The honest gap
+
+When you write about code you did not write, you will hit things you cannot
+explain. Why the retry limit is three. Why this path special-cases one
+customer. Why the obvious approach was not taken.
+
+**Say that you do not know.** An "Open questions" section is worth more than a
+plausible-sounding reason, because a plausible-sounding reason is
+indistinguishable from a real one and nobody will ever check it again:
+
+```markdown
+## Open questions
+
+- Why is the retry limit 3? Introduced in #412 with no rationale.
+- Is the 30s timeout load-bearing, or just inherited from the old client?
+```
+
+That section is prose and stays prose. Making it verifiable would only pressure
+people to delete the questions, which is the opposite of what you want.
+
+Never put a review stamp on a section whose rationale you guessed. A stamp says
+a human read the prose against the code and believes it. Guessing and stamping
+converts an open question into a false answer, permanently.
+
 ## Smells
 
 - **The exhaustive table.** Forty rows walking an input space. Nobody reads it,
@@ -114,6 +164,8 @@ in a batch.
   about what it does not know.
 - **Anchors outnumbering paragraphs.** You are writing tests in Markdown. They
   will be worse than the tests in your test suite and harder to run.
+- **Invented rationale.** A confident "this is done for performance reasons"
+  that nobody verified. It will outlive everyone who could have corrected it.
 
 ## How much is enough
 

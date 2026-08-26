@@ -24,6 +24,16 @@ import type { ParseResult, Review, ReviewResult } from './types.ts';
 /** How many hex characters of the digest we record. */
 const DIGEST_LENGTH = 12;
 
+/**
+ * Digest format version, recorded in the stamp.
+ *
+ * The algorithm is part of the file format: change it and every stamp in every
+ * repository stops matching. Without a version marker that would be reported
+ * as "the code changed" -- a lie, and one that trains people to stamp blindly.
+ * With it, we can say what actually happened.
+ */
+const DIGEST_VERSION = '1';
+
 export interface ReviewOptions {
   /** Skip review checking entirely. */
   reviews?: boolean;
@@ -54,6 +64,16 @@ function check(review: Review, dir: string): ReviewResult {
       ...base,
       status: 'failed',
       reason: `never stamped; read this section against ${review.covers.join(', ')}, then run --stamp`,
+      digest: computed,
+      current: false,
+    };
+  }
+
+  if (!review.digest.startsWith(`${DIGEST_VERSION}:`)) {
+    return {
+      ...base,
+      status: 'failed',
+      reason: `stamped with an older digest format, so it cannot be compared; the code may well be unchanged. Re-read and run --stamp`,
       digest: computed,
       current: false,
     };
@@ -96,7 +116,7 @@ export function digestOf(covers: string[], dir: string): string | Error {
     hasher.update(`${target} ${text} `);
   }
 
-  return hasher.digest('hex').slice(0, DIGEST_LENGTH);
+  return `${DIGEST_VERSION}:${hasher.digest('hex').slice(0, DIGEST_LENGTH)}`;
 }
 
 /** The source text a single `Covers:` target refers to. */
@@ -112,7 +132,7 @@ function sourceOf(target: string, dir: string): string | Error {
 
   if (!symbol) {
     try {
-      return readFileSync(path, 'utf8');
+      return normalise(readFileSync(path, 'utf8'));
     } catch (err) {
       return new Error(`covers ${target}, but it could not be read: ${(err as Error).message}`);
     }
@@ -125,5 +145,16 @@ function sourceOf(target: string, dir: string): string | Error {
   if (!found) {
     return new Error(`covers ${target}, but ${filePart} exports no \`${symbol}\``);
   }
-  return found.text;
+  return normalise(found.text);
+}
+
+/**
+ * Line endings are a property of the checkout, not of the code.
+ *
+ * Without this, a team with mixed Windows and Unix working copies -- or one
+ * `core.autocrlf` setting -- sees every review go stale on every machine, and
+ * learns to stamp without reading.
+ */
+function normalise(text: string): string {
+  return text.replace(/\r\n/g, '\n');
 }
