@@ -12,9 +12,9 @@
  */
 import { dirname, extname, resolve as resolvePath } from 'node:path';
 import { existsSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 
 import type { Nodes, Root } from 'mdast';
+import { clearSymbolCache, exportedNames } from './symbols.ts';
 import type { ParseProblem, ParseResult } from './types.ts';
 
 /** File extensions we are willing to import to enumerate exports. */
@@ -37,8 +37,8 @@ export interface Reference {
 
 export interface ReferenceOptions {
   /**
-   * Import fragment-linked modules to check the symbol exists. On by default;
-   * only files the author explicitly fragment-linked are ever imported.
+   * Check that fragment-linked symbols exist. On by default. Modules are read,
+   * never imported, so nothing in the checked project is executed.
    */
   symbols?: boolean;
 }
@@ -109,7 +109,7 @@ export async function checkReferences(
     }
 
     if (MODULE_EXTS.has(ext) && options.symbols !== false) {
-      const exports = await moduleExports(targetPath);
+      const exports = exportedNames(targetPath);
       if (exports instanceof Error) {
         report(ref, `could not read ${ref.target}: ${exports.message}`);
       } else if (!exports.has(ref.fragment)) {
@@ -129,7 +129,6 @@ export async function checkReferences(
 // ---------------------------------------------------------------------------
 
 const slugCache = new Map<string, Set<string> | null>();
-const exportCache = new Map<string, Set<string> | Error>();
 
 async function markdownSlugs(path: string): Promise<Set<string> | null> {
   const cached = slugCache.get(path);
@@ -147,24 +146,10 @@ async function markdownSlugs(path: string): Promise<Set<string> | null> {
   return slugs;
 }
 
-async function moduleExports(path: string): Promise<Set<string> | Error> {
-  const cached = exportCache.get(path);
-  if (cached !== undefined) return cached;
-
-  let result: Set<string> | Error;
-  try {
-    result = new Set(Object.keys(await import(pathToFileURL(path).href)));
-  } catch (err) {
-    result = err instanceof Error ? err : new Error(String(err));
-  }
-  exportCache.set(path, result);
-  return result;
-}
-
 /** Forget cached lookups. Tests that write fixtures on the fly need this. */
 export function clearReferenceCache(): void {
   slugCache.clear();
-  exportCache.clear();
+  clearSymbolCache();
 }
 
 // ---------------------------------------------------------------------------

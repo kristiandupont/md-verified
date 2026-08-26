@@ -15,6 +15,9 @@ export const STATUS_GLYPH: Record<Status, string> = {
   skipped: '⚠️', // warning sign
 };
 
+/** An unstamped review, analogous to the pending hammer on an anchor. */
+export const REVIEW_PENDING_GLYPH = '\u{1F441}\uFE0F';
+
 /** Every glyph we recognise as "this is a status marker", incl. bare variants. */
 export const KNOWN_GLYPHS = new Set([
   '\u{1F6E0}️',
@@ -23,6 +26,8 @@ export const KNOWN_GLYPHS = new Set([
   '❌',
   '⚠️',
   '⚠',
+  '\u{1F441}\uFE0F',
+  '\u{1F441}',
 ]);
 
 /** Human-facing parenthetical appended after the anchor id. */
@@ -146,6 +151,41 @@ export interface Anchor {
   gapRange: { start: number; end: number };
 }
 
+/**
+ * A claim that a human has read this section against the code behind it.
+ *
+ * Prose and rationale cannot be executed. What *can* be checked is whether
+ * anyone has looked at them since the code they describe last changed -- an
+ * attestation rather than a proof, which is the honest thing to offer for the
+ * parts of a document that matter most and verify least.
+ */
+export interface Review {
+  id: string;
+  status: Status;
+  /** Paths, relative to the document, optionally `#symbol`-qualified. */
+  covers: string[];
+  /** The digest recorded at the last review, if any. */
+  digest: string | null;
+  /** A malformed review, e.g. one that declares nothing to cover. */
+  defect: string | null;
+  meta: AnchorMeta;
+  line: number;
+  quoteRange: { start: number; end: number };
+  gapRange: { start: number; end: number };
+}
+
+/** The outcome of checking one review. */
+export interface ReviewResult {
+  id: string;
+  line: number;
+  status: Exclude<Status, 'pending'>;
+  reason: string | null;
+  /** The digest as it is now. Written back by `--stamp`. */
+  digest: string | null;
+  /** Whether the recorded digest matched. */
+  current: boolean;
+}
+
 /** A structural problem found while parsing -- reported like a failure. */
 export interface ParseProblem {
   id: string | null;
@@ -161,6 +201,7 @@ export interface ParseResult {
   /** The mdast tree, kept so passes like reference checking can reuse it. */
   tree: Root;
   anchors: Anchor[];
+  reviews: Review[];
   problems: ParseProblem[];
 }
 
@@ -271,6 +312,8 @@ export interface AnchorResult {
 
 export interface RunSummary {
   anchors: number;
+  reviews: number;
+  reviewsStale: number;
   passed: number;
   failed: number;
   skipped: number;
@@ -285,6 +328,7 @@ export interface RunResult {
   ok: boolean;
   source: string;
   anchors: AnchorResult[];
+  reviews: ReviewResult[];
   problems: ParseProblem[];
   summary: RunSummary;
 }

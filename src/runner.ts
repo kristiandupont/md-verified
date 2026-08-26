@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs';
 
 import { findGlueHint, parseMarkdown } from './parser.ts';
 import { checkReferences } from './references.ts';
+import { checkReviews } from './reviews.ts';
 import { getRegistrations, type VerifyContext } from './framework.ts';
 import type {
   Anchor,
@@ -28,8 +29,10 @@ export interface RunOptions {
   only?: string[];
   /** Check links, in-document anchors and fragment-linked symbols. Default on. */
   links?: boolean;
-  /** Import fragment-linked modules to check symbols exist. Default on. */
+  /** Check that fragment-linked symbols exist. Default on. */
   symbols?: boolean;
+  /** Check review staleness. Default on. */
+  reviews?: boolean;
   /** Stop after the first failing case. */
   bail?: boolean;
   /** Per-case timeout in ms. `0` disables. */
@@ -80,8 +83,13 @@ export async function runParsed(parsed: ParseResult, options: RunOptions = {}): 
 
   const problems = [...parsed.problems, ...references];
 
+  // Reviews attest that a human read a section against the code behind it.
+  const reviews = checkReviews(parsed, { reviews: options.reviews });
+
   const summary = {
     anchors: results.length,
+    reviews: reviews.length,
+    reviewsStale: reviews.filter((r) => r.status === 'failed').length,
     passed: results.filter((r) => r.status === 'passed').length,
     failed: results.filter((r) => r.status === 'failed').length,
     skipped: results.filter((r) => r.status === 'skipped').length,
@@ -95,10 +103,12 @@ export async function runParsed(parsed: ParseResult, options: RunOptions = {}): 
     file: parsed.file,
     source: parsed.source,
     anchors: results,
+    reviews,
     problems,
-    // Structural problems are failures too -- a spec that cannot bind, or that
-    // points at things which no longer exist, is not green.
-    ok: summary.failed === 0 && problems.length === 0,
+    // Structural problems are failures too -- a document that cannot bind, that
+    // points at things which no longer exist, or whose prose has not been read
+    // since the code moved, is not green.
+    ok: summary.failed === 0 && summary.reviewsStale === 0 && problems.length === 0,
     summary,
   };
 }

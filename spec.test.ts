@@ -11,10 +11,13 @@ import { resolve } from 'node:path';
 
 import {
   checkReferences,
+  checkReviews,
+  clearSymbolCache,
   clearReferenceCache,
   coerce,
   covers,
   headingSlugs,
+  findGlueHint,
   parseMarkdown,
   parseMermaid,
   parseSchema,
@@ -26,6 +29,7 @@ import {
   resolveGlue,
   slugify,
 } from './src/index.ts';
+import { rewriteFromRun } from './src/report.ts';
 import type { MermaidGraph, ParsedList, ParsedTable } from './src/index.ts';
 
 const SPEC = 'examples/spec.md';
@@ -741,6 +745,348 @@ describe('heading slugs', () => {
   test('reads through inline formatting', () => {
     const tree = parseMarkdown('## The `covers` helper\n', 't.md').tree;
     expect([...headingSlugs(tree)]).toEqual(['the-covers-helper']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reviews: staleness for the prose that cannot be executed
+// ---------------------------------------------------------------------------
+
+describe('reviews', () => {
+  let n = 0;
+  /** A throwaway module + document pair, cleaned up afterwards. */
+  const scratch = async (
+    moduleSource: string,
+    docBody: (mod: string) => string,
+    fn: (ctx: { doc: string; mod: string; edit: (s: string) => Promise<void> }) => Promise<void>,
+  ) => {
+    const tag = `${process.pid}-${n++}`;
+    const mod = `examples/.tmp-mod-${tag}.ts`;
+    const doc = `examples/.tmp-doc-${tag}.md`;
+    await Bun.write(mod, moduleSource);
+    await Bun.write(doc, docBody(`./.tmp-mod-${tag}.ts`));
+    clearSymbolCache();
+    try {
+      await fn({
+        doc,
+        mod,
+        edit: async (next) => { await Bun.write(mod, next); clearSymbolCache(); },
+      });
+    } finally {
+      await Bun.file(mod).delete();
+      await Bun.file(doc).delete();
+      clearSymbolCache();
+    }
+  };
+
+  const MODULE = [
+    'export function covered(a: number) {',
+    '  return a + 1;',
+    '}',
+    '',
+    'export const UNRELATED = 1;',
+    '',
+  ].join('\n');
+
+  const docWith = (extra = '') => (mod: string) =>
+    ['# Thing', '', '> 👁️ **Reviewed:** `thing`', `> **Covers:** \`${mod}#covered\``, extra, '', 'Some prose.', '']
+      .filter((l) => l !== null)
+      .join('\n');
+
+  const run = async (doc: string) => {
+    const parsed = parseMarkdown(await Bun.file(doc).text(), doc);
+    return { parsed, result: await runParsed(parsed, { links: false }) };
+  };
+
+  test('parses covers and digest off the blockquote', async () => {
+    await scratch(MODULE, docWith('> **Digest:** `abc123`'), async ({ doc }) => {
+      const { parsed } = await run(doc);
+      expect(parsed.reviews).toHaveLength(1);
+      expect(parsed.reviews[0]!.id).toBe('thing');
+      expect(parsed.reviews[0]!.covers[0]).toMatch(/#covered$/);
+      expect(parsed.reviews[0]!.digest).toBe('abc123');
+    });
+  });
+
+  test('an unstamped review fails and asks to be stamped', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const { result } = await run(doc);
+      expect(result.ok).toBe(false);
+      expect(result.reviews[0]!.status).toBe('failed');
+      expect(result.reviews[0]!.reason).toMatch(/never stamped/);
+    });
+  });
+
+  test('--stamp records the digest and clears the note', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const { parsed, result } = await run(doc);
+      const out = rewriteFromRun(result, parsed, { stamp: true });
+
+      expect(out).toContain('> ✅ **Reviewed:** `thing`');
+      expect(out).toMatch(/> \*\*Digest:\*\* `[0-9a-f]{12}`/);
+      expect(out).not.toContain('<!-- REVIEW:');
+    });
+  });
+
+  test('a stamped review is current', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const first = await run(doc);
+      await Bun.write(doc, rewriteFromRun(first.result, first.parsed, { stamp: true }));
+
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.status).toBe('passed');
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  test('an unrelated edit in the same file does not fire', async () => {
+    await scratch(MODULE, docWith(), async ({ doc, edit }) => {
+      const first = await run(doc);
+      await Bun.write(doc, rewriteFromRun(first.result, first.parsed, { stamp: true }));
+
+      // Touch a different export entirely.
+      await edit(MODULE.replace('export const UNRELATED = 1;', 'export const UNRELATED = 99;'));
+
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.status).toBe('passed');
+    });
+  });
+
+  test('editing the covered symbol makes it stale, and says so in the file', async () => {
+    await scratch(MODULE, docWith(), async ({ doc, edit }) => {
+      const first = await run(doc);
+      await Bun.write(doc, rewriteFromRun(first.result, first.parsed, { stamp: true }));
+
+      await edit(MODULE.replace('return a + 1;', 'return a + 2;'));
+
+      const { parsed, result } = await run(doc);
+      expect(result.reviews[0]!.status).toBe('failed');
+      expect(result.ok).toBe(false);
+
+      const out = rewriteFromRun(result, parsed);
+      expect(out).toContain('**Reviewed:** `thing` (Stale)');
+      expect(out).toMatch(/<!-- REVIEW: .*changed since this section was last read.*-->/);
+    });
+  });
+
+  test('rewriting a stale review twice is idempotent', async () => {
+    await scratch(MODULE, docWith(), async ({ doc, edit }) => {
+      const first = await run(doc);
+      await Bun.write(doc, rewriteFromRun(first.result, first.parsed, { stamp: true }));
+      await edit(MODULE.replace('return a + 1;', 'return a + 3;'));
+
+      const second = await run(doc);
+      const once = rewriteFromRun(second.result, second.parsed);
+      await Bun.write(doc, once);
+
+      const third = await run(doc);
+      expect(rewriteFromRun(third.result, third.parsed)).toBe(once);
+    });
+  });
+
+  test('--write never stamps: an attestation must be deliberate', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const { parsed, result } = await run(doc);
+      const out = rewriteFromRun(result, parsed, { stamp: false });
+      expect(out).not.toContain('**Digest:**');
+    });
+  });
+
+  test('covering something that does not exist fails clearly', async () => {
+    await scratch(MODULE, (mod) =>
+      ['> 👁️ **Reviewed:** `x`', `> **Covers:** \`${mod}#nope\``, '', 'Prose.', ''].join('\n'),
+    async ({ doc }) => {
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.reason).toMatch(/exports no `nope`/);
+    });
+
+    await scratch(MODULE, () =>
+      ['> 👁️ **Reviewed:** `x`', '> **Covers:** `./gone.ts`', '', 'Prose.', ''].join('\n'),
+    async ({ doc }) => {
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.reason).toMatch(/does not exist/);
+    });
+  });
+
+  test('a review that covers nothing is a defect', async () => {
+    await scratch(MODULE, () => ['> 👁️ **Reviewed:** `x`', '', 'Prose.', ''].join('\n'),
+    async ({ doc }) => {
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.reason).toMatch(/declares no \*\*Covers:\*\* targets/);
+    });
+  });
+
+  test('a whole-file target is honoured, and is more sensitive', async () => {
+    await scratch(MODULE, (mod) =>
+      ['> 👁️ **Reviewed:** `x`', `> **Covers:** \`${mod}\``, '', 'Prose.', ''].join('\n'),
+    async ({ doc, edit }) => {
+      const first = await run(doc);
+      await Bun.write(doc, rewriteFromRun(first.result, first.parsed, { stamp: true }));
+
+      // The same unrelated edit that a symbol target ignores.
+      await edit(MODULE.replace('export const UNRELATED = 1;', 'export const UNRELATED = 99;'));
+
+      const { result } = await run(doc);
+      expect(result.reviews[0]!.status).toBe('failed');
+    });
+  });
+
+  test('--reset clears the stamp', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const first = await run(doc);
+      const stamped = rewriteFromRun(first.result, first.parsed, { stamp: true });
+      await Bun.write(doc, stamped);
+
+      const second = await run(doc);
+      const out = rewriteFromRun(second.result, second.parsed, { reset: true });
+      expect(out).not.toContain('**Digest:**');
+      expect(out).toContain('> 👁️ **Reviewed:** `thing`');
+    });
+  });
+
+  test('review checking can be switched off', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const parsed = parseMarkdown(await Bun.file(doc).text(), doc);
+      expect(checkReviews(parsed, { reviews: false })).toEqual([]);
+
+      const result = await runParsed(parsed, { links: false, reviews: false });
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  test('a document of prose and reviews needs no glue code', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const proc = Bun.spawn(['bun', 'run', 'check.ts', doc], {
+        stdout: 'pipe', stderr: 'pipe', env: { ...process.env, NO_COLOR: '1' },
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      await proc.exited;
+      expect(stderr).not.toContain('no glue code found');
+      expect(stdout).toContain('never stamped');
+    });
+  });
+});
+
+describe('interleaved anchors and reviews', () => {
+  test('rewriting a document containing both leaves each intact', async () => {
+    verify.reset();
+    verify.table('t', () => {});
+
+    // The review sits *before* the anchor. Rewriting them in two passes
+    // shifted the anchor's offsets and shredded its blockquote.
+    const src = [
+      '# Doc',
+      '',
+      '> 👁️ **Reviewed:** `r`',
+      '> **Covers:** `./checkout.ts#calculateTotal`',
+      '',
+      'Some prose.',
+      '',
+      '> 🛠️ **Verified Data:** `t`',
+      '> **Schema:** `[n: Integer]`',
+      '',
+      '| N |',
+      '| - |',
+      '| 1 |',
+      '',
+    ].join('\n');
+
+    const doc = 'examples/.tmp-interleaved.md';
+    await Bun.write(doc, src);
+    try {
+      const parsed = parseMarkdown(await Bun.file(doc).text(), doc);
+      const run = await runParsed(parsed, { links: false });
+
+      for (const opts of [{}, { stamp: true }, { reset: true }]) {
+        const out = rewriteFromRun(run, parsed, opts);
+        expect(out).toContain('**Verified Data:** `t`');
+        expect(out).toContain('> **Schema:** `[n: Integer]`');
+        expect(out).toContain('**Reviewed:** `r`');
+        expect(out).toContain('| N |');
+        // The blockquote must stay one contiguous block.
+        expect(out).not.toMatch(/>\s*\n\n\*\*\s*\n/);
+      }
+    } finally {
+      await Bun.file(doc).delete();
+    }
+  });
+
+  test('stamping a review does not disturb anchors after it', async () => {
+    verify.reset();
+    verify.table('t', () => {});
+
+    const src = [
+      '> 👁️ **Reviewed:** `r`',
+      '> **Covers:** `./checkout.ts#calculateTotal`',
+      '',
+      'Prose.',
+      '',
+      '> 🛠️ **Verified Data:** `t`',
+      '',
+      '| N |',
+      '| - |',
+      '| 1 |',
+      '',
+    ].join('\n');
+
+    const doc = 'examples/.tmp-stamp-order.md';
+    await Bun.write(doc, src);
+    try {
+      const parsed = parseMarkdown(await Bun.file(doc).text(), doc);
+      const run = await runParsed(parsed, { links: false });
+      const out = rewriteFromRun(run, parsed, { stamp: true });
+
+      // Re-parsing the result must find both, still bound.
+      const again = parseMarkdown(out, doc);
+      expect(again.reviews).toHaveLength(1);
+      expect(again.anchors).toHaveLength(1);
+      expect(again.anchors[0]!.id).toBe('t');
+      expect(again.problems).toEqual([]);
+    } finally {
+      await Bun.file(doc).delete();
+    }
+  });
+});
+
+describe('glue hints', () => {
+  test('a hint in prose is found', () => {
+    expect(findGlueHint('# X\n\n<!-- verify: ./real.ts -->\n')).toBe('./real.ts');
+  });
+
+  test('a hint shown as an example in a code fence is not', () => {
+    const doc = ['# Docs', '', '```markdown', '<!-- verify: ./x.verify.ts -->', '```', ''].join('\n');
+    expect(findGlueHint(doc)).toBeNull();
+  });
+
+  test('a real hint still wins when an example appears first', () => {
+    const doc = [
+      '```markdown',
+      '<!-- verify: ./example.ts -->',
+      '```',
+      '',
+      '<!-- verify: ./real.ts -->',
+      '',
+    ].join('\n');
+    expect(findGlueHint(doc)).toBe('./real.ts');
+  });
+});
+
+describe('comment ownership', () => {
+  test("a rewrite never deletes the author's glue hint", async () => {
+    verify.reset();
+    verify.table('t', () => {});
+    // The hint sits in the gap the rewriter owns.
+    const src = '> 🛠️ **Verified Data:** `t`\n\n<!-- verify: ./glue.ts -->\n\n| A |\n| - |\n| 1 |\n';
+
+    const p = parseMarkdown(src, 't.md');
+    const run = await runParsed(p, { links: false });
+    const out = rewriteMarkdown(src, p.anchors, run.anchors);
+
+    expect(out).toContain('<!-- verify: ./glue.ts -->');
+    expect(p.anchors).toHaveLength(1); // and the hint did not break the binding
   });
 });
 

@@ -16,6 +16,7 @@
     "check": "bun run check.ts",
     "test": "bun test",
     "demo": "bun run check.ts examples/spec.md",
+    "docs": "bun run check.ts README.md docs/*.md examples/spec.md",
     "demo:fail": "bun run check.ts examples/broken.md --report"
   },
   "type": "module",

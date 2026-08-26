@@ -13,14 +13,33 @@
  * re-serialisation of the AST -- so every byte the author wrote that we did
  * not deliberately change survives untouched.
  */
-import { STATUS_GLYPH, type Anchor, type AnchorResult, type RunResult, type Status } from './types.ts';
+import {
+  REVIEW_PENDING_GLYPH,
+  STATUS_GLYPH,
+  type Anchor,
+  type AnchorResult,
+  type Review,
+  type ReviewResult,
+  type RunResult,
+  type Status,
+} from './types.ts';
 
 /** Anchor first line: quote marker, optional glyph, then the bold body. */
 const FIRST_LINE_RE = /^(?<prefix>\s*>\s*)(?<glyph>[^\s*`]+\s+)?(?<body>\*\*\s*Verified[\s\S]*)$/;
+/** The same, for a review. */
+const REVIEW_LINE_RE = /^(?<prefix>\s*>\s*)(?<glyph>[^\s*`]+\s+)?(?<body>\*\*\s*Reviewed[\s\S]*)$/;
+/** A `> **Digest:** ...` line inside a review blockquote. */
+const DIGEST_LINE_RE = /^(?<prefix>\s*>\s*)\*\*\s*Digest\s*:?\s*\*\*\s*:?\s*.*$/;
 /** A status parenthetical we own and may replace. */
-const SUFFIX_RE = /\s*\((?:Failed|Passed|Skipped|Pending)[^)]*\)\s*$/i;
-/** A whole line holding one of our comments. */
-const MANAGED_LINE_RE = /^[ \t]*<!--\s*(?:ERROR|VERIFY)\b[^\n]*?-->[ \t]*\r?\n?/gm;
+const SUFFIX_RE = /\s*\((?:Failed|Passed|Skipped|Pending|Stale)[^)]*\)\s*$/i;
+/**
+ * A whole line holding a comment *we* wrote, and may therefore replace.
+ *
+ * Deliberately narrower than the parser's skip list: an author's
+ * `<!-- verify: ./glue.ts -->` hint must survive a rewrite untouched, so only
+ * our own `ERROR:` and `REVIEW:` comments match here.
+ */
+const MANAGED_LINE_RE = /^[ \t]*<!--\s*(?:ERROR|REVIEW):[^\n]*?-->[ \t]*\r?\n?/gm;
 
 /** Most failures we will write into the document before summarising. */
 const MAX_COMMENTS = 8;
@@ -28,6 +47,14 @@ const MAX_COMMENTS = 8;
 export interface RewriteOptions {
   /** Ignore results and return every anchor to its unrun state. */
   reset?: boolean;
+  /**
+   * Record the current digest on every review, marking it as read.
+   *
+   * Deliberately separate from a normal write: a stamp asserts that a person
+   * or agent has read the section against the code it covers. Applying it as a
+   * side effect of `--write` would make the attestation worthless.
+   */
+  stamp?: boolean;
 }
 
 /**
@@ -39,24 +66,75 @@ export function rewriteMarkdown(
   anchors: Anchor[],
   results: AnchorResult[],
   options: RewriteOptions = {},
+  reviews: Review[] = [],
+  reviewResults: ReviewResult[] = [],
 ): string {
   const byAnchor = new Map(results.map((r) => [r.line + ':' + r.id, r]));
-  let out = source;
+  const byReview = new Map(reviewResults.map((r) => [r.line + ':' + r.id, r]));
 
-  // Back to front, so earlier offsets stay valid as we splice.
-  for (const anchor of [...anchors].sort((a, b) => b.quoteRange.start - a.quoteRange.start)) {
+  /**
+   * Anchors and reviews are interleaved in the document, so they cannot be
+   * rewritten in two passes: the first pass would shift every offset the
+   * second one still needs. Build one list of edits and apply it back to
+   * front, which keeps every not-yet-applied offset valid.
+   */
+  interface Edit {
+    start: number;
+    end: number;
+    replace: () => string;
+  }
+
+  const edits: Edit[] = [];
+
+  for (const anchor of anchors) {
     const result = byAnchor.get(anchor.line + ':' + anchor.id);
     const status: Status = options.reset ? 'pending' : (result?.status ?? 'pending');
 
-    const quote = out.slice(anchor.quoteRange.start, anchor.quoteRange.end);
-    const gap = out.slice(anchor.gapRange.start, anchor.gapRange.end);
-    const comments = options.reset ? [] : commentsFor(result);
+    edits.push({
+      start: anchor.quoteRange.start,
+      end: anchor.gapRange.end,
+      replace: () =>
+        rewriteQuote(
+          source.slice(anchor.quoteRange.start, anchor.quoteRange.end),
+          status,
+          result,
+          options.reset === true,
+        ) +
+        rewriteGap(
+          source.slice(anchor.gapRange.start, anchor.gapRange.end),
+          options.reset ? [] : commentsFor(result),
+        ),
+    });
+  }
 
-    out =
-      out.slice(0, anchor.quoteRange.start) +
-      rewriteQuote(quote, status, result, options.reset === true) +
-      rewriteGap(gap, comments) +
-      out.slice(anchor.gapRange.end);
+  for (const review of reviews) {
+    const result = byReview.get(review.line + ':' + review.id);
+    const status: Status = options.reset ? 'pending' : (result?.status ?? 'pending');
+
+    // Stamping resolves the very thing the comment would report, so it clears
+    // the note rather than writing one.
+    const stamped = options.stamp === true && Boolean(result?.digest);
+    const comments =
+      options.reset || stamped || status !== 'failed' || !result?.reason
+        ? []
+        : [comment('REVIEW', result.reason)];
+
+    edits.push({
+      start: review.quoteRange.start,
+      end: review.gapRange.end,
+      replace: () =>
+        rewriteReviewQuote(
+          source.slice(review.quoteRange.start, review.quoteRange.end),
+          status,
+          result,
+          options,
+        ) + rewriteGap(source.slice(review.gapRange.start, review.gapRange.end), comments),
+    });
+  }
+
+  let out = source;
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, edit.start) + edit.replace() + out.slice(edit.end);
   }
 
   return out;
@@ -65,10 +143,61 @@ export function rewriteMarkdown(
 /** Convenience: rewrite straight from a `RunResult`. */
 export function rewriteFromRun(
   run: RunResult,
-  anchors: Anchor[],
+  parsed: { anchors: Anchor[]; reviews: Review[] },
   options: RewriteOptions = {},
 ): string {
-  return rewriteMarkdown(run.source, anchors, run.anchors, options);
+  return rewriteMarkdown(
+    run.source,
+    parsed.anchors,
+    run.anchors,
+    options,
+    parsed.reviews,
+    run.reviews,
+  );
+}
+
+/**
+ * Rewrite a review's blockquote: its glyph, and -- only when stamping -- the
+ * digest recorded on it.
+ */
+function rewriteReviewQuote(
+  quote: string,
+  status: Status,
+  result: ReviewResult | undefined,
+  options: RewriteOptions,
+): string {
+  const lines = quote.split('\n');
+  const head = REVIEW_LINE_RE.exec(lines[0] ?? '');
+  if (!head) return quote;
+
+  const stamping = options.stamp === true && result?.digest;
+  const glyph = options.reset
+    ? REVIEW_PENDING_GLYPH
+    : stamping
+      ? STATUS_GLYPH.passed
+      : status === 'pending'
+        ? REVIEW_PENDING_GLYPH
+        : STATUS_GLYPH[status];
+
+  const body = head.groups!.body!.replace(SUFFIX_RE, '');
+  const suffix = options.reset || stamping || status !== 'failed' ? '' : '(Stale)';
+
+  lines[0] = head.groups!.prefix! + glyph + ' ' + body + (suffix ? ' ' + suffix : '');
+
+  const prefix = head.groups!.prefix!.replace(/\s+$/, ' ');
+
+  if (options.reset) {
+    return lines.filter((l) => !DIGEST_LINE_RE.test(l)).join('\n');
+  }
+  if (!stamping) return lines.join('\n');
+
+  const digestLine = `${prefix}**Digest:** \`${result!.digest}\``;
+  const existing = lines.findIndex((l) => DIGEST_LINE_RE.test(l));
+
+  if (existing === -1) lines.push(digestLine);
+  else lines[existing] = digestLine;
+
+  return lines.join('\n');
 }
 
 function rewriteQuote(
@@ -217,6 +346,12 @@ export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): 
     }
   }
 
+  for (const review of run.reviews) {
+    const mark = review.status === 'passed' ? MARK.passed!() : MARK.failed!();
+    out.push(`  ${mark} ${review.id} ${c.dim(`(review, line ${review.line})`)}`);
+    if (review.reason) out.push(`      ${c.red(review.reason)}`);
+  }
+
   const s = run.summary;
   const bits = [
     s.passed ? c.green(`${s.passed} passed`) : null,
@@ -227,7 +362,9 @@ export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): 
   out.push('');
   out.push(
     `  ${bits.join(c.dim(', ')) || c.dim('nothing to verify')} ${c.dim(
-      `(${s.cases} case${s.cases === 1 ? '' : 's'}, ${s.durationMs.toFixed(0)}ms)`,
+      `(${s.cases} case${s.cases === 1 ? '' : 's'}` +
+        (s.reviews ? `, ${s.reviews - s.reviewsStale}/${s.reviews} reviews current` : '') +
+        `, ${s.durationMs.toFixed(0)}ms)`,
     )}`,
   );
 

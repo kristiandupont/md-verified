@@ -34,6 +34,7 @@ import {
   type ParsedTable,
   type ParseProblem,
   type ParseResult,
+  type Review,
   type RowDefect,
   type SchemaField,
   type Status,
@@ -44,15 +45,25 @@ import {
 const ANCHOR_RE =
   /^\s*(?:(?<status>[^\s*`]+)\s+)?\*\*\s*Verified\s+(?<label>[A-Za-z][A-Za-z0-9 _-]*?)\s*:?\s*\*\*\s*:?\s*`(?<id>[^`]+)`\s*(?<rest>.*)$/u;
 
+/** A review blockquote: `> [glyph] **Reviewed:** `id``. Binds to no asset. */
+const REVIEW_RE =
+  /^\s*(?:(?<status>[^\s*`]+)\s+)?\*\*\s*Reviewed\s*:?\s*\*\*\s*:?\s*`(?<id>[^`]+)`\s*(?<rest>.*)$/u;
+
 /** Subsequent lines: `**Key:** value`. */
 const META_RE =
   /^\s*\*\*\s*(?<key>[A-Za-z][A-Za-z0-9 _-]*?)\s*:?\s*\*\*\s*:?\s*(?<value>.*)$/u;
 
-/** Comments this framework owns and is free to rewrite. */
-export const MANAGED_COMMENT_RE = /^<!--\s*(?:ERROR|VERIFY)\b/i;
+/**
+ * Comments the lookahead steps over when binding an anchor to its asset.
+ *
+ * Broader than the set we are allowed to *rewrite* (see `MANAGED_LINE_RE` in
+ * `report.ts`): an author's `<!-- verify: ./glue.ts -->` hint is skipped here
+ * so it cannot break a binding, but it is never ours to delete.
+ */
+export const SKIPPABLE_COMMENT_RE = /^<!--\s*(?:ERROR|REVIEW|verify)\b/i;
 
 /** Human labels -> the asset kind they bind to. */
-const LABEL_KINDS: Record<string, AnchorKind> = {
+export const LABEL_KINDS: Record<string, AnchorKind> = {
   data: 'table',
   table: 'table',
   rows: 'table',
@@ -86,6 +97,7 @@ export function parseMarkdown(source: string, file = '<memory>'): ParseResult {
   }) as Root;
 
   const anchors: Anchor[] = [];
+  const reviews: Review[] = [];
   const problems: ParseProblem[] = [];
   const children = tree.children;
 
@@ -94,6 +106,15 @@ export function parseMarkdown(source: string, file = '<memory>'): ParseResult {
     if (node.type !== 'blockquote') continue;
 
     const lines = quoteLines(source, node);
+
+    // A review covers the section it sits in; it binds to no asset, so there
+    // is no lookahead to do.
+    const reviewHead = REVIEW_RE.exec(lines[0] ?? '');
+    if (reviewHead) {
+      reviews.push(buildReview(source, children, i, node, reviewHead, lines));
+      continue;
+    }
+
     const head = ANCHOR_RE.exec(lines[0] ?? '');
     if (!head) continue;
 
@@ -161,12 +182,39 @@ export function parseMarkdown(source: string, file = '<memory>'): ParseResult {
     i = j - 1; // resume scanning just before the bound target
   }
 
-  return { file, source, tree, anchors, problems };
+  return { file, source, tree, anchors, reviews, problems };
 }
 
-/** Read a `<!-- verify: ./glue.ts -->` hint, if the document carries one. */
+/**
+ * Read a `<!-- verify: ./glue.ts -->` hint, if the document carries one.
+ *
+ * Scans HTML nodes rather than the raw source, so a hint shown as an *example*
+ * inside a fenced code block is not mistaken for a real one. Documentation
+ * about this tool is the obvious case, and it is exactly the kind of thing a
+ * regex over the whole file gets wrong.
+ */
 export function findGlueHint(source: string): string | null {
-  return GLUE_HINT_RE.exec(source)?.groups?.path ?? null;
+  const tree = fromMarkdown(source, {
+    extensions: [gfmTable(), gfmTaskListItem()],
+    mdastExtensions: [gfmTableFromMarkdown(), gfmTaskListItemFromMarkdown()],
+  }) as Root;
+
+  let hint: string | null = null;
+
+  const walk = (node: any): void => {
+    if (hint) return;
+    if (node.type === 'html') {
+      const found = GLUE_HINT_RE.exec(node.value)?.groups?.path;
+      if (found) {
+        hint = found;
+        return;
+      }
+    }
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(tree);
+
+  return hint;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +380,53 @@ function splitTopLevel(text: string): string[] {
   return out;
 }
 
+function buildReview(
+  source: string,
+  children: RootContent[],
+  index: number,
+  node: RootContent,
+  head: RegExpExecArray,
+  lines: string[],
+): Review {
+  const meta = parseMeta(lines.slice(1));
+  const id = head.groups!.id!.trim();
+
+  let covers: string[] = [];
+  let defect: string | null = null;
+  try {
+    covers = parseCovers(meta.Covers ?? '');
+    if (covers.length === 0) {
+      defect = `review \`${id}\` declares no **Covers:** targets, so there is nothing to go stale against`;
+    }
+  } catch (err) {
+    defect = `review \`${id}\`: ${(err as Error).message}`;
+  }
+
+  // Error comments go between the review and whatever follows it.
+  let j = index + 1;
+  while (j < children.length && isManagedComment(children[j]!)) j++;
+  const gapEnd = children[j]?.position?.start.offset ?? source.length;
+
+  return {
+    id,
+    status: statusFromGlyph(head.groups!.status),
+    covers,
+    digest: meta.Digest ? meta.Digest.replace(/`/g, '').trim() || null : null,
+    defect,
+    meta,
+    line: node.position!.start.line,
+    quoteRange: { start: node.position!.start.offset!, end: node.position!.end.offset! },
+    gapRange: { start: node.position!.end.offset!, end: gapEnd },
+  };
+}
+
+/** `` `./a.ts#x`, `./b.ts` `` -> targets. */
+export function parseCovers(raw: string): string[] {
+  return splitTopLevel(raw.replace(/`/g, ''))
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
 /** A safe placeholder for an anchor whose asset could not be read. */
 function emptyData(kind: AnchorKind): Anchor['data'] {
   if (kind === 'table') return { headers: [], align: [], rows: [], defects: [], schema: null };
@@ -369,7 +464,7 @@ function statusFromGlyph(glyph: string | undefined): Status {
 }
 
 function isManagedComment(node: RootContent): boolean {
-  return node.type === 'html' && MANAGED_COMMENT_RE.test(node.value.trim());
+  return node.type === 'html' && SKIPPABLE_COMMENT_RE.test(node.value.trim());
 }
 
 function kindOfNode(node: RootContent): AnchorKind | null {

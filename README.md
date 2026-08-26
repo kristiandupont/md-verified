@@ -25,6 +25,12 @@ bun run check.ts examples/spec.md
 bun test
 ```
 
+The point is documents that stay *true*, which is not the same as documents
+that are fully verified — see [writing documents that stay
+true](./docs/writing.md) for what earns an anchor and what should stay prose.
+There is an agent skill at
+[`.claude/skills/verified-docs`](./.claude/skills/verified-docs/SKILL.md).
+
 ## How binding works
 
 An anchor is a blockquote whose first line matches:
@@ -37,11 +43,10 @@ The runner then takes the **immediately following block node** and binds it.
 The label says what you expect; the node says what is actually there, and a
 disagreement is reported rather than guessed at:
 
-| Label | Binds to |
-| --- | --- |
-| `Data`, `Table`, `Rows`, `Examples`, `Cases`, `Dataset`, `Matrix` | a GFM table |
-| `Flow`, `Diagram`, `Graph`, `Mermaid`, `Flowchart`, `States` | a ` ```mermaid ` block |
-| `Rules`, `List`, `Steps`, `Checklist`, `Items` | a bullet or ordered list |
+`Data` and `Table` bind to a GFM table, `Flow` and `Diagram` to a
+` ```mermaid ` block, `Rules` and `Checklist` to a list. The full set of labels
+is listed — and verified against the source — in
+[docs/anchor-reference.md](./docs/anchor-reference.md).
 
 Lookahead skips only the HTML comments this tool writes itself, so a document
 that has already been annotated with failures still binds correctly next run.
@@ -71,9 +76,11 @@ row.itemsTotal      // 10
 row.$raw['Items Total'] // '$10.00'
 ```
 
-Built-in types: `Currency`, `Percentage`, `Number`, `Integer`, `Boolean`,
-`Date`, `String`, `JSON`, `List`. A trailing `?` (`discount?: Currency`) lets a
-blank cell through as `null`. Register your own with `verify.type()`.
+Built-in types cover currency, percentages, numbers, booleans, dates, JSON and
+comma-separated lists; the complete table, with a worked example per type, is in
+[docs/anchor-reference.md](./docs/anchor-reference.md). A trailing `?`
+(`discount?: Currency`) lets a blank cell through as `null`. Register your own
+with `verify.type()`.
 
 Without a `Schema:` line, cells arrive as the raw text — which is what you want
 when the document's exact formatting is part of the contract.
@@ -179,6 +186,49 @@ Only files you fragment-link are imported, and only to read their export names.
 `--no-symbols` keeps the link checks but imports nothing; `--no-links` skips the
 pass entirely.
 
+## Reviews: the parts that cannot be executed
+
+Most of a good document is prose — rationale, context, the reason a rule exists
+at all. That is usually the part worth reading, and it is the part that rots
+silently.
+
+A review does not try to verify prose. It records which code a section
+describes, and a digest of that code at the moment someone last read the two
+together:
+
+```markdown
+> 👁️ **Reviewed:** `settlement`
+> **Covers:** `../src/checkout.ts#paymentMethod`
+> **Digest:** `3aaced165261`
+```
+
+When `paymentMethod` changes, the digest stops matching and the section is
+flagged for a human to re-read. That is an attestation, not a proof — the
+weaker claim, deliberately, because the alternative is either checking nothing
+or pretending prose can be executed.
+
+`--stamp` records the digest. It is **separate from `--write` on purpose**: a
+stamp applied as a side effect of a normal run would attest to nothing.
+
+Point `Covers:` at a **symbol** rather than a whole file. A file-level target is
+invalidated by every unrelated edit in that file, and a review that cries wolf
+gets stamped without being read. Symbol targets ignore edits elsewhere in the
+file, and ignore changes to leading comments.
+
+### Which documents describe this code?
+
+The mapping from prose to code already lives in the documents, so there is no
+need for a marker in the source:
+
+```
+$ bun run check.ts docs/*.md --covering src/parser.ts
+Reviews covering src/parser.ts:
+  docs/anchor-reference.md:14  binding  ../src/parser.ts#parseMarkdown
+```
+
+Run it on the files a change touched. Anything listed describes code that just
+moved.
+
 ## Bi-directional state
 
 `--write` folds the result of a run back into the document. The glyph changes,
@@ -221,16 +271,19 @@ bun run check.ts <file.md> [...] [options]
   --report        Print the annotated Markdown to stdout instead
   --reset         Return anchors to their unrun state
   --json          Machine-readable results, for agents and CI
+  --stamp         Record reviews as read (never implied by --write)
+  --covering <p>  List the reviews that cover a source file
   --no-links      Skip link, anchor and symbol checking
-  --no-symbols    Check links, but do not import modules
+  --no-symbols    Skip symbol checking
+  --no-reviews    Skip review staleness checking
   --only <id>     Run one anchor (repeatable)
   --bail          Stop at the first failure
   --timeout <ms>  Per-case timeout (default 5000, 0 disables)
   --verbose, -v   Show passing cases and stack frames
 ```
 
-Exit code is 0 only when every anchor passed, every anchor bound cleanly, and
-every reference resolved.
+Exit code is 0 only when every anchor passed, every anchor bound cleanly, every
+reference resolved, and every review is current.
 
 ### How things fail
 
@@ -241,6 +294,7 @@ every reference resolved.
 | Schema or diagram malformed | a failed anchor | yes |
 | No handler registered | a skipped anchor | yes |
 | Broken link or symbol | a problem, with `line:col` | no — it is prose, not an anchor |
+| Covered code changed | a stale review | yes |
 
 A row whose cell will not coerce never reaches your handler, and a whole-asset
 handler is never run against a table that is silently missing rows.
@@ -273,10 +327,14 @@ See [`spec.test.ts`](./spec.test.ts).
 | [`src/report.ts`](./src/report.ts) | Terminal output and the Markdown rewrite |
 | [`src/references.ts`](./src/references.ts) | Link, anchor and symbol checking |
 | [`src/covers.ts`](./src/covers.ts) | Set assertions for completeness |
+| [`src/reviews.ts`](./src/reviews.ts) | Review staleness and digests |
+| [`src/symbols.ts`](./src/symbols.ts) | Static symbol lookup, via the TS compiler API |
 | [`src/coerce.ts`](./src/coerce.ts) | `Schema:` value types |
 | [`check.ts`](./check.ts) | CLI |
 | [`examples/spec.md`](./examples/spec.md) | A specification that passes |
 | [`examples/broken.md`](./examples/broken.md) | The same spec, drifted, for the failure path |
+| [`docs/writing.md`](./docs/writing.md) | What earns an anchor, and what does not |
+| [`docs/anchor-reference.md`](./docs/anchor-reference.md) | The vocabulary, verified against the source |
 
 ## Prototype limits
 
@@ -285,9 +343,9 @@ See [`spec.test.ts`](./spec.test.ts).
 - Glue modules are loaded with a cache-busting query string, so a long-lived
   process re-registering the same file will accumulate module instances.
 - Anchor ids must be unique per file; the CLI clears the registry between files.
-- Symbol checking reads *runtime* exports, so type-only exports (`export type`,
-  interfaces) are invisible to it. Reading those needs the TypeScript compiler
-  API rather than an import.
+- Symbol lookup reads files rather than importing them, so nothing in the
+  checked project is executed and type-only exports are visible. The trade-off
+  is that `export * from './x'` is not followed.
 - A reference with no definition (`[text][missing]`) cannot be flagged:
   CommonMark leaves it as literal text, so there is no node in the tree. The
   reader does see the broken brackets.

@@ -6,11 +6,12 @@
  *   bun run check.ts examples/*.md --write
  *   bun run check.ts examples/spec.md --json
  */
-import { basename } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 
 import { loadGlue, resolveGlue, runFile, type RunOptions } from './src/runner.ts';
-import { formatRun, rewriteMarkdown, setColor } from './src/report.ts';
+import { c, formatRun, rewriteFromRun, setColor } from './src/report.ts';
 import { verify } from './src/framework.ts';
+import { parseMarkdown } from './src/parser.ts';
 import type { RunResult } from './src/types.ts';
 
 interface Flags extends RunOptions {
@@ -19,6 +20,8 @@ interface Flags extends RunOptions {
   write: boolean;
   report: boolean;
   reset: boolean;
+  stamp: boolean;
+  covering?: string;
   json: boolean;
   verbose: boolean;
   help: boolean;
@@ -37,7 +40,13 @@ OPTIONS
   --report          Print the annotated Markdown to stdout instead of writing.
   --reset           Return every anchor to its unrun state and drop our comments.
   --json            Emit machine-readable results (for agents and CI).
+  --stamp           Record the current digest on every review, marking the
+                    prose as read. Deliberately separate from --write.
+  --covering <path> Instead of checking, list the reviews that cover <path>.
+                    Answers "which documents describe this code?" without
+                    putting a marker in the code itself.
   --no-links        Skip link, anchor and symbol checking.
+  --no-reviews      Skip review staleness checking.
   --no-symbols      Check links, but do not import modules to check symbols.
   --only <id>       Run only this anchor. Repeatable.
   --bail            Stop at the first failure.
@@ -56,6 +65,7 @@ function parseArgs(argv: string[]): Flags {
     write: false,
     report: false,
     reset: false,
+    stamp: false,
     json: false,
     verbose: false,
     help: false,
@@ -76,7 +86,10 @@ function parseArgs(argv: string[]): Flags {
       case '--json': flags.json = true; break;
       case '--verbose': case '-v': flags.verbose = true; break;
       case '--no-color': setColor(false); break;
+      case '--stamp': flags.stamp = true; break;
+      case '--covering': flags.covering = argv[++i]; break;
       case '--no-links': flags.links = false; break;
+      case '--no-reviews': flags.reviews = false; break;
       case '--no-symbols': flags.symbols = false; break;
       case '--help': case '-h': flags.help = true; break;
       default:
@@ -97,6 +110,8 @@ async function main(): Promise<number> {
   // JSON goes to stdout alone, so it stays pipeable.
   if (flags.json) setColor(false);
 
+  if (flags.covering) return await listCovering(flags);
+
   const runs: RunResult[] = [];
   let failures = 0;
 
@@ -107,7 +122,9 @@ async function main(): Promise<number> {
     const source = await Bun.file(file).text();
     const gluePath = resolveGlue(file, flags.glue, source);
 
-    if (!gluePath && !flags.reset) {
+    // Glue is only required by anchors. A document that is prose plus reviews
+    // has nothing to execute, and should not be nagged for a handler file.
+    if (!gluePath && !flags.reset && parseMarkdown(source, file).anchors.length > 0) {
       console.error(
         `${basename(file)}: no glue code found. Add a <!-- verify: ./x.verify.ts --> hint, ` +
         `create ${basename(file, '.md')}.verify.ts next to it, or pass --glue.`,
@@ -123,12 +140,13 @@ async function main(): Promise<number> {
       timeout: flags.timeout,
       links: flags.links,
       symbols: flags.symbols,
+      reviews: flags.reviews,
     });
     runs.push(run);
     if (!run.ok) failures++;
 
-    if (flags.write || flags.report || flags.reset) {
-      const next = rewriteMarkdown(run.source, parsed.anchors, run.anchors, { reset: flags.reset });
+    if (flags.write || flags.report || flags.reset || flags.stamp) {
+      const next = rewriteFromRun(run, parsed, { reset: flags.reset, stamp: flags.stamp });
 
       if (flags.report) {
         if (!flags.json) console.log(next);
@@ -153,6 +171,7 @@ async function main(): Promise<number> {
             ok: r.ok,
             summary: r.summary,
             problems: r.problems,
+            reviews: r.reviews,
             anchors: r.anchors.map((a) => ({
               id: a.id,
               kind: a.kind,
@@ -175,6 +194,46 @@ async function main(): Promise<number> {
   }
 
   return failures === 0 ? 0 : 1;
+}
+
+/**
+ * The reverse of `Covers:`.
+ *
+ * The mapping from prose to code already exists in the documents, so the
+ * question "which docs describe this file?" can be answered by reading them --
+ * no marker in the source, nothing extra to keep in sync.
+ */
+async function listCovering(flags: Flags): Promise<number> {
+  const target = resolve(flags.covering!);
+  const hits: Array<{ file: string; id: string; line: number; target: string }> = [];
+
+  for (const file of flags.files) {
+    const parsed = parseMarkdown(await Bun.file(file).text(), file);
+    const dir = dirname(resolve(file));
+
+    for (const review of parsed.reviews) {
+      for (const cover of review.covers) {
+        const [path] = cover.split('#');
+        if (resolve(dir, (path ?? '').trim()) === target) {
+          hits.push({ file, id: review.id, line: review.line, target: cover });
+        }
+      }
+    }
+  }
+
+  if (flags.json) {
+    console.log(JSON.stringify({ covering: flags.covering, reviews: hits }, null, 2));
+  } else if (hits.length === 0) {
+    console.log(`No review covers ${flags.covering}.`);
+  } else {
+    console.log(`Reviews covering ${flags.covering}:`);
+    for (const hit of hits) {
+      console.log(`  ${hit.file}:${hit.line}  ${hit.id}  ${c.dim(hit.target)}`);
+    }
+    console.log('');
+    console.log(c.dim('Changing this file may make the prose above wrong. Re-read it, then --stamp.'));
+  }
+  return 0;
 }
 
 main().then(
