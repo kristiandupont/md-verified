@@ -51,7 +51,7 @@
     "docs": "bun run check.ts README.md 'docs/*.md' examples/spec.md",
     "demo:fail": "bun run check.ts examples/broken.md --report",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "prepublishOnly": "bun run build && bun test",
+    "prepublishOnly": "bun run build && bun test && ./scripts/smoke.sh node",
     "typecheck": "tsc --noEmit",
     "ci": "bun run typecheck && bun test && bun run build && bun run docs",
     "smoke": "./scripts/smoke.sh"
