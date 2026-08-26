@@ -37,7 +37,7 @@ bun run check.ts examples/spec.md
 bun test
 ```
 
-The point is documents that stay *true*, which is not the same as documents
+The point is documents that stay _true_, which is not the same as documents
 that are fully verified — see [writing documents that stay
 true](./docs/writing.md) for what earns an anchor and what should stay prose.
 There is an agent skill at
@@ -79,13 +79,13 @@ Handlers then receive real values instead of strings:
 ```
 
 `$10.00` arrives as `10`, `8.5%` as `0.085`. Each value is reachable by column
-header *and* by schema field name, with the author's original text preserved on
+header _and_ by schema field name, with the author's original text preserved on
 `row.$raw`:
 
 ```ts
-row['Items Total']  // 10
-row.itemsTotal      // 10
-row.$raw['Items Total'] // '$10.00'
+row["Items Total"]; // 10
+row.itemsTotal; // 10
+row.$raw["Items Total"]; // '$10.00'
 ```
 
 Built-in types cover currency, percentages, numbers, booleans, dates, JSON and
@@ -102,9 +102,9 @@ when the document's exact formatting is part of the contract.
 The tool imports your `.verify.ts` glue at runtime, so what matters is how each
 runtime handles TypeScript.
 
-| | Glue TypeScript |
-| --- | --- |
-| Bun | Fully transformed. Everything works. |
+|          | Glue TypeScript                      |
+| -------- | ------------------------------------ |
+| Bun      | Fully transformed. Everything works. |
 | Node 24+ | Type **stripping** only — see below. |
 
 Node strips types rather than transforming them, so a few TypeScript features
@@ -138,7 +138,7 @@ tree. The tool does not care. Your `tsconfig.json` does, and it fails in a
 different way for each.
 
 **The rule: treat `.verify.ts` exactly like `.test.ts`.** It is TypeScript that
-should be *checked* but not *shipped*, which is a problem your project has
+should be _checked_ but not _shipped_, which is a problem your project has
 already solved once.
 
 Concretely, two configs — a wide one for checking and the editor, a narrow one
@@ -159,11 +159,11 @@ for building:
 
 Without that split you hit one of these:
 
-| Layout | What goes wrong |
-| --- | --- |
-| `docs/` beside `src/`, `"include": ["src"]` | Glue is **never typechecked**. A real type error in a handler is invisible — Bun strips types, so the document still passes. |
-| `docs/` added to `include`, with `"rootDir": "src"` | `TS6059: File 'docs/x.verify.ts' is not under 'rootDir'`. |
-| Co-located `src/**/*.verify.ts` | Typechecked correctly, but the glue **compiles into your production build** (`dist/billing/billing.verify.js`). |
+| Layout                                              | What goes wrong                                                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `docs/` beside `src/`, `"include": ["src"]`         | Glue is **never typechecked**. A real type error in a handler is invisible — Bun strips types, so the document still passes. |
+| `docs/` added to `include`, with `"rootDir": "src"` | `TS6059: File 'docs/x.verify.ts' is not under 'rootDir'`.                                                                    |
+| Co-located `src/**/*.verify.ts`                     | Typechecked correctly, but the glue **compiles into your production build** (`dist/billing/billing.verify.js`).              |
 
 The first is the dangerous one, because nothing tells you.
 
@@ -173,23 +173,25 @@ Glue can import application code however the rest of your project does —
 ## Glue code
 
 ```ts
-import { verify, assert } from './src/index.ts';
+import { verify, assert } from "./src/index.ts";
 
 // Once per data row.
-verify.table('orderTotals', (row) => {
+verify.table("orderTotals", (row) => {
   const actual = calculateTotal(row.itemsTotal, row.shipping, row.tax);
   assert(actual === row.total, `expected ${row.total}, got ${actual}`);
 });
 
 // Once per edge: { from, to, label, style, directed }.
-verify.mermaid.edges('checkoutFlow', async (edge) => {
-  assert(await checkNavigation(edge.from, edge.to),
-    `illegal transition: ${edge.from} -> ${edge.to}`);
+verify.mermaid.edges("checkoutFlow", async (edge) => {
+  assert(
+    await checkNavigation(edge.from, edge.to),
+    `illegal transition: ${edge.from} -> ${edge.to}`,
+  );
 });
 
 // Once per list item, nested items included.
-verify.list('settlementRules', (item) => {
-  assert(item.checked === settlesImmediately(item.text), 'drifted');
+verify.list("settlementRules", (item) => {
+  assert(item.checked === settlesImmediately(item.text), "drifted");
 });
 ```
 
@@ -212,26 +214,26 @@ file** and read as documentation. Terminal-shaped output reads badly there:
 So the built-ins stay few, and each produces one self-contained line phrased in
 terms of the claim:
 
-| | |
-| --- | --- |
-| `assert(cond, message)` | the escape hatch — use it whenever you can say it better |
-| `equals(actual, expected, what?)` | `total: expected 16, got 15` |
-| `oneOf(value, allowed, what?)` | `status: "archived" is not one of active, paused` |
-| `covers(documented, actual, opts?)` | see [Completeness](#completeness) |
+|                                     |                                                          |
+| ----------------------------------- | -------------------------------------------------------- |
+| `assert(cond, message)`             | the escape hatch — use it whenever you can say it better |
+| `equals(actual, expected, what?)`   | `total: expected 16, got 15`                             |
+| `oneOf(value, allowed, what?)`      | `status: "archived" is not one of active, paused`        |
+| `covers(documented, actual, opts?)` | see [Completeness](#completeness)                        |
 
 Third-party libraries keep working — a handler fails by throwing and that is
 not going away. Multi-line messages keep their structure in the document rather
 than being flattened onto one line.
 
-| Registration | Handler receives |
-| --- | --- |
-| `verify.table(id, fn)` | one `TableRow` per data row |
-| `verify.table.all(id, fn)` | the whole `ParsedTable` |
-| `verify.mermaid(id, fn)` | the whole `MermaidGraph` |
-| `verify.mermaid.edges(id, fn)` | one `MermaidEdge` per edge |
-| `verify.list(id, fn)` | one `ListItem` per item |
-| `verify.list.all(id, fn)` | the whole `ParsedList` |
-| `verify.type(name, fn)` | — registers a `Schema:` value type |
+| Registration                   | Handler receives                   |
+| ------------------------------ | ---------------------------------- |
+| `verify.table(id, fn)`         | one `TableRow` per data row        |
+| `verify.table.all(id, fn)`     | the whole `ParsedTable`            |
+| `verify.mermaid(id, fn)`       | the whole `MermaidGraph`           |
+| `verify.mermaid.edges(id, fn)` | one `MermaidEdge` per edge         |
+| `verify.list(id, fn)`          | one `ListItem` per item            |
+| `verify.list.all(id, fn)`      | the whole `ParsedList`             |
+| `verify.type(name, fn)`        | — registers a `Schema:` value type |
 
 `MermaidGraph` carries `nodes`, `edges` and `subgraphs`, plus `node(id)`,
 `from(id)`, `to(id)`, `hasEdge(a, b)`, `hasPath(a, b)`, `roots()` and
@@ -251,12 +253,16 @@ fifth payment method and nobody adds a row, every row still passes and the
 document is quietly wrong. `covers()` is the assertion that catches it:
 
 ```ts
-verify.mermaid('checkoutFlow', (graph) => {
-  covers(graph.edges.map((e) => `${e.from} -> ${e.to}`), allowedTransitions(), {
-    noun: 'transition',
-    missing: (t) => `${t} is allowed by checkNavigation but is not drawn`,
-    extra: false, // the per-edge handler already owns this direction
-  });
+verify.mermaid("checkoutFlow", (graph) => {
+  covers(
+    graph.edges.map((e) => `${e.from} -> ${e.to}`),
+    allowedTransitions(),
+    {
+      noun: "transition",
+      missing: (t) => `${t} is allowed by checkNavigation but is not drawn`,
+      extra: false, // the per-edge handler already owns this direction
+    },
+  );
 });
 ```
 
@@ -265,7 +271,7 @@ Options: `missing` / `extra` take a message function or `false` to allow that
 direction, `duplicates` (default on) flags a key the document lists twice, and
 `noun` names the thing in default messages.
 
-This is the check worth reaching for first. A *missing* element is
+This is the check worth reaching for first. A _missing_ element is
 machine-identifiable in a way a wrong one is not — the runner knows exactly
 which row should exist, which is what makes the annotation actionable.
 
@@ -359,11 +365,11 @@ failed:
 
 <!-- ERROR: Cart -> Payment: illegal transition: Cart -> Payment -->
 
-```mermaid
+'''mermaid
 graph TD
-    Cart[Cart Page] --> Shipping[Shipping Info]
-    Cart --> Payment[Payment Info]
-```
+Cart[Cart Page] --> Shipping[Shipping Info]
+Cart --> Payment[Payment Info]
+'''
 ```
 
 Comments are invisible in every renderer, so the page still reads as prose. For
@@ -406,14 +412,14 @@ reference resolved, and every review is current.
 
 ### How things fail
 
-| | Reported as | Annotated into the document |
-| --- | --- | --- |
-| Handler throws | a failed case | yes |
-| A cell will not coerce | a failed case, that row only | yes |
-| Schema or diagram malformed | a failed anchor | yes |
-| No handler registered | a skipped anchor | yes |
-| Broken link or symbol | a problem, with `line:col` | no — it is prose, not an anchor |
-| Covered code changed | a stale review | yes |
+|                             | Reported as                  | Annotated into the document     |
+| --------------------------- | ---------------------------- | ------------------------------- |
+| Handler throws              | a failed case                | yes                             |
+| A cell will not coerce      | a failed case, that row only | yes                             |
+| Schema or diagram malformed | a failed anchor              | yes                             |
+| No handler registered       | a skipped anchor             | yes                             |
+| Broken link or symbol       | a problem, with `line:col`   | no — it is prose, not an anchor |
+| Covered code changed        | a stale review               | yes                             |
 
 A row whose cell will not coerce never reaches your handler, and a whole-asset
 handler is never run against a table that is silently missing rows.
@@ -424,16 +430,16 @@ handler is never run against a table that is silently missing rows.
 test runner can own scheduling and reporting — one native test per table row:
 
 ```ts
-import { describe, test, expect } from 'bun:test';
-import { loadDocument } from 'md-verified';
+import { describe, test, expect } from "bun:test";
+import { loadDocument } from "md-verified";
 
-for (const file of ['docs/pricing.md', 'docs/limits.md']) {
+for (const file of ["docs/pricing.md", "docs/limits.md"]) {
   const doc = await loadDocument(file);
 
   describe(doc.file, () => {
-    test('references resolve', () => expect(doc.problems).toEqual([]));
-    test('reviews current', () =>
-      expect(doc.reviews.filter((r) => r.status === 'failed')).toEqual([]));
+    test("references resolve", () => expect(doc.problems).toEqual([]));
+    test("reviews current", () =>
+      expect(doc.reviews.filter((r) => r.status === "failed")).toEqual([]));
 
     for (const suite of doc.suites) {
       describe(suite.id, () => {
@@ -445,7 +451,7 @@ for (const file of ['docs/pricing.md', 'docs/limits.md']) {
 ```
 
 Use `loadDocument` rather than importing glue files directly. Anchor ids are
-unique per *document*, and Bun shares module state across test files, so two
+unique per _document_, and Bun shares module state across test files, so two
 documents that both use `prices` would otherwise collide. `loadDocument`
 isolates the registry per document; cases keep their own handler afterwards.
 
@@ -454,24 +460,24 @@ isolates the registry per document; cases keep their own handler afterwards.
 
 ## Layout
 
-| File | |
-| --- | --- |
-| [`src/parser.ts`](./src/parser.ts) | Markdown → anchors: the AST walk, lookahead binding, schemas |
-| [`src/mermaid.ts`](./src/mermaid.ts) | Mermaid flowcharts → nodes and edges |
-| [`src/framework.ts`](./src/framework.ts) | The `verify` registry |
-| [`src/runner.ts`](./src/runner.ts) | Execution, case planning, glue resolution |
-| [`src/report.ts`](./src/report.ts) | Terminal output and the Markdown rewrite |
-| [`src/references.ts`](./src/references.ts) | Link, anchor and symbol checking |
-| [`src/covers.ts`](./src/covers.ts) | Set assertions for completeness |
-| [`src/assertions.ts`](./src/assertions.ts) | `assert`, `equals`, `oneOf` |
-| [`src/reviews.ts`](./src/reviews.ts) | Review staleness and digests |
-| [`src/symbols.ts`](./src/symbols.ts) | Static symbol lookup, via the TS compiler API |
-| [`src/coerce.ts`](./src/coerce.ts) | `Schema:` value types |
-| [`check.ts`](./check.ts) | CLI |
-| [`examples/spec.md`](./examples/spec.md) | A specification that passes |
-| [`examples/broken.md`](./examples/broken.md) | The same spec, drifted, for the failure path |
-| [`docs/writing.md`](./docs/writing.md) | What earns an anchor, and what does not |
-| [`docs/anchor-reference.md`](./docs/anchor-reference.md) | The vocabulary, verified against the source |
+| File                                                     |                                                              |
+| -------------------------------------------------------- | ------------------------------------------------------------ |
+| [`src/parser.ts`](./src/parser.ts)                       | Markdown → anchors: the AST walk, lookahead binding, schemas |
+| [`src/mermaid.ts`](./src/mermaid.ts)                     | Mermaid flowcharts → nodes and edges                         |
+| [`src/framework.ts`](./src/framework.ts)                 | The `verify` registry                                        |
+| [`src/runner.ts`](./src/runner.ts)                       | Execution, case planning, glue resolution                    |
+| [`src/report.ts`](./src/report.ts)                       | Terminal output and the Markdown rewrite                     |
+| [`src/references.ts`](./src/references.ts)               | Link, anchor and symbol checking                             |
+| [`src/covers.ts`](./src/covers.ts)                       | Set assertions for completeness                              |
+| [`src/assertions.ts`](./src/assertions.ts)               | `assert`, `equals`, `oneOf`                                  |
+| [`src/reviews.ts`](./src/reviews.ts)                     | Review staleness and digests                                 |
+| [`src/symbols.ts`](./src/symbols.ts)                     | Static symbol lookup, via the TS compiler API                |
+| [`src/coerce.ts`](./src/coerce.ts)                       | `Schema:` value types                                        |
+| [`check.ts`](./check.ts)                                 | CLI                                                          |
+| [`examples/spec.md`](./examples/spec.md)                 | A specification that passes                                  |
+| [`examples/broken.md`](./examples/broken.md)             | The same spec, drifted, for the failure path                 |
+| [`docs/writing.md`](./docs/writing.md)                   | What earns an anchor, and what does not                      |
+| [`docs/anchor-reference.md`](./docs/anchor-reference.md) | The vocabulary, verified against the source                  |
 
 ## Prototype limits
 
