@@ -7,13 +7,17 @@
 
 /** Thrown when a cell cannot be read as its declared type. */
 export class CoercionError extends Error {
-  constructor(
-    readonly value: string,
-    readonly type: string,
-    detail?: string,
-  ) {
+  // Assigned in the body rather than declared as constructor parameter
+  // properties: those are not supported by Node's strip-only type stripping,
+  // and this file is imported by glue code that Node may have to load as TS.
+  readonly value: string;
+  readonly type: string;
+
+  constructor(value: string, type: string, detail?: string) {
     super(`cannot read ${JSON.stringify(value)} as ${type}${detail ? ` (${detail})` : ''}`);
     this.name = 'CoercionError';
+    this.value = value;
+    this.type = type;
   }
 }
 

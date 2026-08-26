@@ -19,9 +19,14 @@ import type {
 
 /** Raised for diagram source we cannot make sense of. */
 export class MermaidParseError extends Error {
-  constructor(message: string, readonly line: number) {
+  // Not a constructor parameter property: those are unsupported by Node's
+  // strip-only type stripping, and glue code may make Node load this as TS.
+  readonly line: number;
+
+  constructor(message: string, line: number) {
     super(`${message} (diagram line ${line})`);
     this.name = 'MermaidParseError';
+    this.line = line;
   }
 }
 

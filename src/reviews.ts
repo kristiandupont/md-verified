@@ -17,6 +17,7 @@
  */
 import { dirname, resolve as resolvePath } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 import { exportedSymbol } from './symbols.ts';
 import type { ParseResult, Review, ReviewResult } from './types.ts';
@@ -108,7 +109,7 @@ export function digestOf(covers: string[], dir: string): string | Error {
     return new Error('declares no **Covers:** targets, so there is nothing to go stale against');
   }
 
-  const hasher = new Bun.CryptoHasher('sha256');
+  const hasher = createHash('sha256');
 
   for (const target of covers) {
     const text = sourceOf(target, dir);

@@ -8,6 +8,7 @@
  */
 import { resolve, dirname, basename, extname, join, relative } from 'node:path';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 
 import { findGlueHint, parseMarkdown } from './parser.ts';
 import { checkReferences } from './references.ts';
@@ -48,7 +49,7 @@ export async function runFile(file: string, options: RunOptions = {}): Promise<{
   parsed: ParseResult;
 }> {
   const path = resolve(file);
-  const source = await Bun.file(path).text();
+  const source = await readFile(path, 'utf8');
   const parsed = parseMarkdown(source, file);
   const run = await runParsed(parsed, options);
   return { run, parsed };
@@ -376,7 +377,7 @@ export async function loadDocument(
   file: string,
   options: RunOptions & { glue?: string } = {},
 ): Promise<LoadedDocument> {
-  const source = await Bun.file(file).text();
+  const source = await readFile(file, 'utf8');
 
   // Isolate: whatever a previous document registered is not ours.
   verify.reset();

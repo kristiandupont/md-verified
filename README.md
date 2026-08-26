@@ -22,11 +22,12 @@ the document is inert markup that only a tool understands.
 ### Install
 
 ```
-bun add -d md-verified
-bunx md-verified 'docs/**/*.md'
+bun add -d md-verified          # or: npm install -D md-verified
+bunx md-verified 'docs/**/*.md' # or: npx md-verified 'docs/**/*.md'
 ```
 
-Bun only — the package uses Bun's runtime APIs and is not built for Node.
+Runs on **Bun** and **Node 24+**. The package itself uses only `node:`
+builtins, so there is one code path rather than a compatibility layer.
 
 Or from a clone:
 
@@ -95,6 +96,40 @@ with `verify.type()`.
 
 Without a `Schema:` line, cells arrive as the raw text — which is what you want
 when the document's exact formatting is part of the contract.
+
+## Runtimes
+
+The tool imports your `.verify.ts` glue at runtime, so what matters is how each
+runtime handles TypeScript.
+
+| | Glue TypeScript |
+| --- | --- |
+| Bun | Fully transformed. Everything works. |
+| Node 24+ | Type **stripping** only — see below. |
+
+Node strips types rather than transforming them, so a few TypeScript features
+do not survive **in glue, or in anything glue imports as `.ts`**:
+
+```
+enum, namespace, parameter properties (constructor(readonly x: string)), decorators
+```
+
+Types, interfaces, generics, `as const`, `satisfies` and type-only exports are
+all fine. In practice glue is plain functions, so this rarely bites — the case
+that does is glue importing an `enum` from your application code.
+
+The fix is one line:
+
+```bash
+NODE_OPTIONS=--experimental-transform-types npx md-verified docs/thing.md
+```
+
+The published bin uses a `node` shebang so `npx` works out of the box. To run it
+under Bun instead — which has none of the above limits — use `bunx --bun
+md-verified` or `bun node_modules/md-verified/dist/check.js`.
+
+Deno is untested. It should work in principle, via `node:` compatibility and an
+`npm:` specifier, but nothing here verifies that.
 
 ## Project layout
 
@@ -446,7 +481,10 @@ isolates the registry per document; cases keep their own handler afterwards.
   process re-registering the same file will accumulate module instances.
 - Anchor ids must be unique per document. The CLI clears the registry between
   files; in-process, use `loadDocument()`.
-- Bun only. The package uses Bun's runtime APIs and is not built for Node.
+- Node's type stripping cannot handle `enum`, `namespace`, parameter properties
+  or decorators in glue. See [Runtimes](#runtimes); `NODE_OPTIONS=--experimental-transform-types`
+  lifts the restriction.
+- Deno is untested.
 - Symbol lookup reads files rather than importing them, so nothing in the
   checked project is executed and type-only exports are visible. The trade-off
   is that `export * from './x'` is not followed.

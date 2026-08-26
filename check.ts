@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * CLI entry point.
  *
@@ -7,6 +7,7 @@
  *   bun run check.ts examples/spec.md --json
  */
 import { existsSync } from 'node:fs';
+import { glob, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 
 /** Where documents live when the caller does not say. */
@@ -196,7 +197,7 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
 
   if (!existsSync(file)) throw new Error('no such file');
 
-  const source = await Bun.file(file).text();
+  const source = await readFile(file, 'utf8');
   const gluePath = resolveGlue(file, flags.glue, source);
 
   // Glue is only required by anchors. A document that is prose plus reviews
@@ -224,16 +225,44 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
     if (flags.report) {
       if (!flags.json) console.log(next);
     } else if (next !== run.source) {
-      await Bun.write(file, next);
+      await writeFile(file, next);
     }
   }
 
+  // A stamped review is current from this moment on. Reporting it as stale --
+  // and exiting non-zero -- would be complaining about the very thing the
+  // command just resolved, and would make `--stamp && ...` impossible.
+  const settled = flags.stamp ? afterStamping(run) : run;
+
   if (!flags.json && !flags.report) {
-    console.log(formatRun(run, { verbose: flags.verbose }));
+    console.log(formatRun(settled, { verbose: flags.verbose }));
     console.log('');
   }
 
-  return run;
+  return settled;
+}
+
+/**
+ * Fold a `--stamp` into the result: reviews that received a digest are now
+ * current. Reviews that failed for a reason stamping cannot fix -- covering a
+ * file that does not exist, declaring no targets -- are left failing.
+ */
+function afterStamping(run: RunResult): RunResult {
+  const reviews = run.reviews.map((review) =>
+    review.status === 'failed' && review.digest !== null
+      ? { ...review, status: 'passed' as const, reason: null, current: true }
+      : review,
+  );
+
+  const reviewsStale = reviews.filter((r) => r.status === 'failed').length;
+  const summary = { ...run.summary, reviewsStale };
+
+  return {
+    ...run,
+    reviews,
+    summary,
+    ok: summary.failed === 0 && reviewsStale === 0 && run.problems.length === 0,
+  };
 }
 
 /**
@@ -258,9 +287,12 @@ async function expand(patterns: string[]): Promise<{ files: string[]; unmatched:
     }
 
     const matches: string[] = [];
-    for await (const match of new Bun.Glob(pattern).scan({ dot: false })) {
-      if (IGNORED_DIRS.test(match)) continue;
-      matches.push(match);
+    for await (const match of glob(pattern)) {
+      const path = String(match);
+      // Skip dotfiles and vendored trees explicitly, so behaviour does not
+      // depend on which runtime's glob defaults are in play.
+      if (IGNORED_DIRS.test(path) || /(^|\/)\./.test(path)) continue;
+      matches.push(path);
     }
 
     if (matches.length === 0) {
@@ -290,7 +322,7 @@ async function listCovering(flags: Flags, files: string[]): Promise<number> {
 
   for (const file of files) {
     if (!existsSync(file)) continue;
-    const parsed = parseMarkdown(await Bun.file(file).text(), file);
+    const parsed = parseMarkdown(await readFile(file, 'utf8'), file);
     const dir = dirname(resolve(file));
 
     for (const review of parsed.reviews) {

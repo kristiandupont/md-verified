@@ -39,3 +39,29 @@ jobs:
             echo "examples/broken.md passed, but it is supposed to fail"
             exit 1
           fi
+
+  # The only job that exercises the *published shape*: pack, install, and drive
+  # the CLI as a consumer would. Two bugs that the suite above could not see
+  # were caught this way -- a runtime dependency left in devDependencies, and
+  # shipping TypeScript that made consumers typecheck our source.
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [node, bun]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: bun install --frozen-lockfile
+
+      - name: Install and drive the packed package
+        run: ./scripts/smoke.sh ${{ matrix.runtime }}

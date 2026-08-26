@@ -61,6 +61,12 @@ md-verified --covering src/x.ts        # which docs describe this file?
 Inside the md-verified repository itself, use `bun run check.ts` in place of
 `md-verified`.
 
+Under Node, glue cannot use `enum`, `namespace`, parameter properties or
+decorators — Node strips types rather than transforming them. If a glue file
+fails to load with `not supported in strip-only mode`, either avoid the
+construct or prefix the command with
+`NODE_OPTIONS=--experimental-transform-types`. Bun has no such limit.
+
 Exit code is 0 only when every anchor passed, every reference resolved, and
 every review is current.
 

@@ -13,6 +13,7 @@
  * line phrased in terms of the claim the document is making. Reach for `assert`
  * whenever you can say it better yourself -- which is often, and is the point.
  */
+import { isDeepStrictEqual } from 'node:util';
 
 /** Throw with `message` unless `condition` holds. */
 export function assert(condition: unknown, message: string): asserts condition {
@@ -59,7 +60,7 @@ function same(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
   if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
-    return Bun.deepEquals(a, b, true);
+    return isDeepStrictEqual(a, b);
   }
   return false;
 }

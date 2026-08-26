@@ -1379,6 +1379,40 @@ describe('cli', () => {
     }
   });
 
+  test('--stamp exits 0 once it has resolved what it stamped', async () => {
+    const doc = 'examples/.tmp-stampexit.md';
+    await Bun.write(doc, [
+      '# S', '',
+      '> 👁️ **Reviewed:** `r`',
+      '> **Covers:** `./checkout.ts#calculateTotal`',
+      '', 'Prose.', '',
+    ].join('\n'));
+    try {
+      // Without --stamp the unstamped review fails.
+      expect((await run([doc])).code).toBe(1);
+      // Stamping resolves it, so complaining about it afterwards would be
+      // complaining about the thing the command just fixed.
+      const stamped = await run([doc, '--stamp']);
+      expect(stamped.code).toBe(0);
+      expect(stamped.stdout).toContain('1/1 reviews current');
+      expect(await Bun.file(doc).text()).toMatch(/\*\*Digest:\*\* `1:/);
+    } finally {
+      await Bun.file(doc).delete();
+    }
+  });
+
+  test('--stamp still fails on a review it cannot fix', async () => {
+    const doc = 'examples/.tmp-stampbad.md';
+    await Bun.write(doc, '# S\n\n> 👁️ **Reviewed:** `r`\n> **Covers:** `./gone.ts`\n\nProse.\n');
+    try {
+      const r = await run([doc, '--stamp']);
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain('does not exist');
+    } finally {
+      await Bun.file(doc).delete();
+    }
+  });
+
   test('--covering searches **/*.md when given no documents', async () => {
     const r = await run(['--covering', 'src/parser.ts']);
     expect(r.code).toBe(0);

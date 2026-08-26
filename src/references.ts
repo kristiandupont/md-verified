@@ -12,6 +12,7 @@
  */
 import { dirname, extname, resolve as resolvePath } from 'node:path';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 
 import type { Nodes, Root } from 'mdast';
 import { clearSymbolCache, exportedNames } from './symbols.ts';
@@ -138,7 +139,7 @@ async function markdownSlugs(path: string): Promise<Set<string> | null> {
   try {
     // Imported lazily: only documents that are actually anchor-linked are read.
     const { parseMarkdown } = await import('./parser.ts');
-    slugs = headingSlugs(parseMarkdown(await Bun.file(path).text(), path).tree);
+    slugs = headingSlugs(parseMarkdown(await readFile(path, 'utf8'), path).tree);
   } catch {
     slugs = null;
   }
