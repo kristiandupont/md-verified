@@ -7,6 +7,8 @@
  * that -- and because a *missing* element is machine-identifiable, it is the
  * failure an agent can act on directly.
  */
+import { countAssertion } from './assertions.ts';
+
 
 export interface CoversOptions {
   /**
@@ -42,6 +44,8 @@ export function covers(
   actual: Iterable<unknown>,
   options: CoversOptions = {},
 ): void {
+  countAssertion();
+
   const noun = options.noun ?? 'entry';
   const doc = [...documented].map(String);
   const act = [...actual].map(String);

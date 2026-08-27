@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { findGlueHint, parseMarkdown } from './parser.ts';
 import { checkReferences } from './references.ts';
 import { checkReviews } from './reviews.ts';
+import { assertionCount } from './assertions.ts';
 import { getRegistrations, verify, type VerifyContext } from './framework.ts';
 import type {
   Anchor,
@@ -100,6 +101,13 @@ export async function runParsed(parsed: ParseResult, options: RunOptions = {}): 
     cases: results.reduce((n, r) => n + r.cases.length, 0),
     casesPassed: results.reduce((n, r) => n + r.cases.filter((x) => x.status === 'passed').length, 0),
     casesFailed: results.reduce((n, r) => n + r.cases.filter((x) => x.status === 'failed').length, 0),
+    // A passing case that asserted nothing earned its checkmark by checking
+    // nothing. Counted, not failed: a handler may legitimately use a
+    // third-party assertion library this cannot see.
+    casesUnasserted: results.reduce(
+      (n, r) => n + r.cases.filter((x) => x.status === 'passed' && x.assertions === 0).length,
+      0,
+    ),
     durationMs: performance.now() - started,
   };
 
@@ -133,7 +141,7 @@ export async function runAnchor(
 
   for (const kase of plan.cases) {
     if (options.bail && results.some((r) => r.status === 'failed')) {
-      results.push({ name: kase.name, status: 'skipped', error: null, stack: null, durationMs: 0, line: kase.line });
+      results.push({ name: kase.name, status: 'skipped', error: null, stack: null, durationMs: 0, line: kase.line, assertions: 0 });
       continue;
     }
     results.push(await runPlanned(kase, options.timeout ?? 5000));
@@ -304,6 +312,9 @@ function buildCases(anchor: Anchor, mode: 'each' | 'all'): Case[] {
 
 async function runPlanned(kase: PlannedCase, timeout: number): Promise<CaseResult> {
   const started = performance.now();
+  // Cases run one at a time, so the difference across a single case is that
+  // case's own assertions -- including any made inside helpers it calls.
+  const before = assertionCount();
   try {
     const value = kase.run();
     await (timeout > 0 ? withTimeout(value, timeout, kase.name) : value);
@@ -314,6 +325,7 @@ async function runPlanned(kase: PlannedCase, timeout: number): Promise<CaseResul
       stack: null,
       durationMs: performance.now() - started,
       line: kase.line,
+      assertions: assertionCount() - before,
     };
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
@@ -324,6 +336,7 @@ async function runPlanned(kase: PlannedCase, timeout: number): Promise<CaseResul
       stack: error.stack ?? null,
       durationMs: performance.now() - started,
       line: kase.line,
+      assertions: assertionCount() - before,
     };
   }
 }

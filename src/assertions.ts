@@ -15,8 +15,37 @@
  */
 import { isDeepStrictEqual } from 'node:util';
 
+/**
+ * How many assertions have been made in this process.
+ *
+ * A handler that asserts nothing still passes -- that is what "throwing is the
+ * whole contract" costs. The runner reads this counter either side of a case so
+ * it can say that a green checkmark was earned by checking nothing, which is
+ * the one situation where the tool actively misleads the reader.
+ *
+ * Deliberately a plain counter rather than per-case state: cases run one at a
+ * time, and an assertion made from a helper several frames deep still counts.
+ */
+let assertions = 0;
+
+export function assertionCount(): number {
+  return assertions;
+}
+
+/**
+ * Record that an assertion was made.
+ *
+ * `assert`, `equals`, `oneOf` and `covers` call this for you. Call it from your
+ * own helper when it checks something these do not -- otherwise a case that
+ * only uses your helper is reported as having asserted nothing.
+ */
+export function countAssertion(): void {
+  assertions++;
+}
+
 /** Throw with `message` unless `condition` holds. */
 export function assert(condition: unknown, message: string): asserts condition {
+  assertions++;
   if (!condition) throw new Error(message);
 }
 
@@ -32,6 +61,7 @@ export function assert(condition: unknown, message: string): asserts condition {
  * checked; without it the message is just "expected 16, got 15".
  */
 export function equals(actual: unknown, expected: unknown, what?: string): void {
+  assertions++;
   if (same(actual, expected)) return;
 
   const subject = what ? `${what}: ` : '';
@@ -47,6 +77,7 @@ export function equals(actual: unknown, expected: unknown, what?: string): void 
  * ```
  */
 export function oneOf(value: unknown, allowed: Iterable<unknown>, what?: string): void {
+  assertions++;
   const options = [...allowed];
   if (options.some((option) => same(value, option))) return;
 

@@ -296,6 +296,11 @@ export interface CaseResult {
   durationMs: number;
   /** 1-based source line the case came from, when known. */
   line: number | null;
+  /**
+   * Assertions this case made, via `assert`, `equals`, `oneOf`, `covers` or
+   * `countAssertion`. Zero means the case passed without checking anything.
+   */
+  assertions: number;
 }
 
 /** Everything that happened for a single anchor. */
@@ -320,6 +325,8 @@ export interface RunSummary {
   cases: number;
   casesPassed: number;
   casesFailed: number;
+  /** Passing cases that made no assertion -- a checkmark that checked nothing. */
+  casesUnasserted: number;
   durationMs: number;
 }
 

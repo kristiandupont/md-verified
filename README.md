@@ -293,6 +293,22 @@ Third-party libraries keep working — a handler fails by throwing and that is
 not going away. Multi-line messages keep their structure in the document rather
 than being flattened onto one line.
 
+### A checkmark that checked nothing
+
+Throwing is the whole contract, so a handler that asserts nothing passes. That
+is the one case where a green anchor actively misleads its reader, and the
+runner says so:
+
+```
+✔ classification 4/4 (table, line 12) — 4 of 4 cases made no assertion
+```
+
+A note rather than a failure, deliberately: a handler that delegates to a
+third-party assertion library really is checking something this cannot see. If
+you have your own assertion helper, call `countAssertion()` inside it and those
+cases stop being reported. `assertionCount()` reads the running total, and each
+case carries its own `assertions` in `--json`.
+
 ## Completeness
 
 Per-element handlers only ever check elements that exist. If the code grows a
@@ -321,6 +337,46 @@ direction, `duplicates` (default on) flags a key the document lists twice, and
 This is the check worth reaching for first. A _missing_ element is
 machine-identifiable in a way a wrong one is not — the runner knows exactly
 which row should exist, which is what makes the annotation actionable.
+
+### Reading the set out of the type system
+
+"This table's rows are exactly the members of that union" is the archetypal
+claim in a typed codebase, and the one that rots silently. `typeMembers()` reads
+the member list off the declaration, so `covers()` has something to compare
+against that nobody has to maintain:
+
+```ts
+import { verify, covers, typeMembers } from "md-verified";
+
+const classify = new URL("../src/classify.ts", import.meta.url);
+
+verify.table.all("classification", (table) => {
+  covers(
+    table.rows.map((r) => r.kind as string),
+    typeMembers(classify, "OutcomeKind"),
+    { noun: "outcome" },
+  );
+});
+```
+
+`propertiesOf()` does the same for the property and method names of an interface
+or object type. Both take a path relative to the working directory, or a `URL` —
+use the `URL` form in glue, so the answer does not depend on where the command
+was run from.
+
+Both read the **declaration only**. There is no type checker here, so a union
+assembled by reference (`keyof typeof X`), an interface with an `extends`
+clause, or a union that is not all string literals is **refused with a message
+saying which**, rather than answered with a partial list. A silently short list
+would make `covers()` pass against nothing, which is the failure the function
+exists to remove.
+
+For the lower-level questions — does this module export this name, and what is
+its declaration text — `exportedNames()` and `exportedSymbol()` return that.
+They read the file rather than importing it, so nothing in your project is
+executed and type-only exports are visible. Unlike the two above, they return an
+`Error` instead of throwing, because their callers are lint passes rather than
+glue.
 
 ## Reference checking
 

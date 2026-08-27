@@ -242,6 +242,7 @@ async function main(): Promise<number> {
                 status: cse.status,
                 line: cse.line,
                 error: cse.error,
+                assertions: cse.assertions,
               })),
             })),
           })),
