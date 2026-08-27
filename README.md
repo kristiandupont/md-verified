@@ -1,25 +1,146 @@
 # md-verified
 
-Executable specifications from Markdown that nobody has to learn to read.
+Documentation that is checked against the code it describes.
 
-There is no Given/When/Then, no feature-file dialect, no custom renderer. A
-specification is an ordinary `.md` file with ordinary tables, lists and Mermaid
-diagrams. It looks native on GitHub, in VS Code, and in any Markdown viewer you
-already use. A blockquote above each asset registers it with the test runner:
+A document is an ordinary Markdown file. Here is a diagram from one, describing
+the steps a customer may move between during checkout:
 
-```markdown
-> 🛠️ **Verified Data:** `orderTotals`
-> **Schema:** `[itemsTotal: Currency, shipping: Currency, tax: Percentage, total: Currency]`
+```mermaid
+graph TD
+    Cart --> Shipping
+    Shipping --> Payment
+    Payment --> Review
+    Review --> Confirm
 
-| Items Total | Shipping | Tax Rate | Total Owed |
-| ----------- | -------- | -------- | ---------- |
-| $10.00      | $5.00    | 10%      | $16.00     |
+    Shipping --> Cart
+    Payment --> Shipping
+    Review --> Payment
 ```
 
-The blockquote renders as a callout. The table renders as a table. Nothing in
-the document is inert markup that only a tool understands.
+That renders on GitHub, in VS Code and in any other viewer, because it is an
+ordinary Mermaid diagram. It is also executable. The document adds one line
+above it, which every renderer shows as a callout:
 
-### Install
+```markdown
+> 🛠️ **Verified Flow:** `checkoutFlow`
+```
+
+and a `.verify.ts` file beside the document says what `checkoutFlow` has to be
+true of:
+
+```ts
+// Every transition drawn in the diagram must be one the code permits.
+verify.mermaid.edges("checkoutFlow", async (edge) => {
+  assert(
+    await checkNavigation(edge.from, edge.to),
+    `illegal transition: ${edge.from} -> ${edge.to}`,
+  );
+});
+
+// And every transition the code permits must be drawn.
+verify.mermaid("checkoutFlow", (graph) => {
+  covers(
+    graph.edges.map((e) => `${e.from} -> ${e.to}`),
+    allowedTransitions(),
+    {
+      noun: "transition",
+      missing: (t) => `${t} is allowed by checkNavigation but is not drawn`,
+      extra: false, // the per-edge handler above already reports that direction
+    },
+  );
+});
+```
+
+Add a transition to `checkNavigation` and forget the diagram, and the run
+fails:
+
+```
+examples/spec.md
+  ✖ checkoutFlow 7/8 (mermaid, line 36)
+      whole diagram:36  Review -> Cart is allowed by checkNavigation but is not drawn
+```
+
+Draw an edge the code rejects and it fails the other way round. The claim being
+checked here is a rule about behaviour — which moves the checkout state machine
+permits — rather than a stored value.
+
+Tables and checklists bind the same way, one case per row and per item, with a
+whole-asset handler alongside for questions about the set. A table may declare
+a `Schema:` line, and its cells then arrive typed: `$10.00` reaches the handler
+as `10`, `8.5%` as `0.085`. [`examples/spec.md`](./examples/spec.md) is a
+complete document using all three kinds, including this diagram.
+
+Nothing in it is markup that only this tool can read. The blockquote renders as
+a callout, the diagram renders as a diagram, and a reader who has never heard
+of md-verified sees an ordinary page.
+
+## Why
+
+A pull request shows what changed. It does not show the rule the change was
+meant to implement — the reviewer reconstructs that from the diff and from
+whatever they already know about the system. That reconstruction is the
+expensive part of reviewing, and it is the part that gets skipped.
+
+A short document that states the rule directly is faster to check than the code
+that implements it. Adding a payment method should appear as one row in a table
+and one edge in a diagram. A reviewer who reads those two changes and agrees
+with them has reviewed the intent, and the code below becomes a question of
+whether it implements the stated rule rather than whether the rule is right.
+
+The usual objection is that documentation goes out of date, and a reader who
+cannot tell which parts are still accurate has to go and read the code anyway.
+That is the objection this tool answers. For the claims an anchor covers, an
+out-of-date document is a failing build: if the table were wrong, CI would have
+said so. This adds very little test coverage — your existing test suite covers
+far more, in more detail. What it adds is a document that can be relied on.
+
+That is worth more now than it was a few years ago. When much of the code in a
+change was written by an agent, there is more of it per reviewer, and the
+reviewer knows less about how any of it came about. A description of the
+intended behaviour that is known to be current is short enough to read
+carefully. It is also what an agent should be given before it changes anything,
+instead of leaving it to infer the intent from the code it is about to
+rewrite.
+
+## How it works
+
+1. **Write the document.** Prose first. Where a claim would be damaging if it
+   silently became false, put it in a table, a list or a diagram, and put an
+   anchor above it — a blockquote naming the asset:
+
+   ```markdown
+   > 🛠️ **Verified Flow:** `checkoutFlow`
+   ```
+
+2. **Write the glue.** A `checkout.verify.ts` beside `checkout.md` binds each
+   id to a function. The function receives the parsed row, edge or list item
+   and throws when the code disagrees with it.
+
+3. **Run it in CI.** `md-verified 'docs/**/*.md'` exits non-zero if any claim
+   disagrees with the implementation. With `--write`, each failure is recorded
+   as an HTML comment directly above the asset that failed, which is where an
+   agent sent to fix it needs the message to be.
+
+Two further passes run over the parts of the document that are not anchors:
+
+- **References.** Every link, image path and `#heading` is resolved, and a link
+  with a symbol fragment — `[calculateTotal](./checkout.ts#calculateTotal)` —
+  fails when that export is renamed or removed.
+- **Reviews.** Prose cannot be executed, so a review records which symbols a
+  section describes and a digest of them at the moment someone last read the
+  two together. When those symbols change, the section is flagged for a human
+  to read again.
+
+### What to verify
+
+The goal is documents that stay _true_, which is not the same as documents that
+are fully verified — chasing the second costs you the first. Most of a good
+document is prose, and prose is what people actually read. See [writing
+documents that stay true](./docs/writing.md) for what earns an anchor and what
+should stay prose. There is an agent skill at
+[`.claude/skills/verified-docs`](./.claude/skills/verified-docs/SKILL.md).
+
+## Install
 
 ```
 bun add -d md-verified          # or: npm install -D md-verified
@@ -27,7 +148,8 @@ bunx md-verified 'docs/**/*.md' # or: npx md-verified 'docs/**/*.md'
 ```
 
 Runs on **Bun** and **Node 24+**. The package itself uses only `node:`
-builtins, so there is one code path rather than a compatibility layer.
+builtins, so there is one code path rather than a compatibility layer. See
+[Runtimes](#runtimes) for the one TypeScript caveat under Node.
 
 Or from a clone:
 
@@ -37,13 +159,11 @@ bun run check.ts examples/spec.md
 bun test
 ```
 
-The point is documents that stay _true_, which is not the same as documents
-that are fully verified — see [writing documents that stay
-true](./docs/writing.md) for what earns an anchor and what should stay prose.
-There is an agent skill at
-[`.claude/skills/verified-docs`](./.claude/skills/verified-docs/SKILL.md).
+[`examples/spec.md`](./examples/spec.md) is a specification that passes;
+[`examples/broken.md`](./examples/broken.md) is the same document with the code
+drifted, for the failure path.
 
-## How binding works
+## Anchors
 
 An anchor is a blockquote whose first line matches:
 
@@ -97,79 +217,6 @@ with `verify.type()`.
 Without a `Schema:` line, cells arrive as the raw text — which is what you want
 when the document's exact formatting is part of the contract.
 
-## Runtimes
-
-The tool imports your `.verify.ts` glue at runtime, so what matters is how each
-runtime handles TypeScript.
-
-|          | Glue TypeScript                      |
-| -------- | ------------------------------------ |
-| Bun      | Fully transformed. Everything works. |
-| Node 24+ | Type **stripping** only — see below. |
-
-Node strips types rather than transforming them, so a few TypeScript features
-do not survive **in glue, or in anything glue imports as `.ts`**:
-
-```
-enum, namespace, parameter properties (constructor(readonly x: string)), decorators
-```
-
-Types, interfaces, generics, `as const`, `satisfies` and type-only exports are
-all fine. In practice glue is plain functions, so this rarely bites — the case
-that does is glue importing an `enum` from your application code.
-
-The fix is one line:
-
-```bash
-NODE_OPTIONS=--experimental-transform-types npx md-verified docs/thing.md
-```
-
-The published bin uses a `node` shebang so `npx` works out of the box. To run it
-under Bun instead — which has none of the above limits — use `bunx --bun
-md-verified` or `bun node_modules/md-verified/dist/check.js`.
-
-Deno is untested. It should work in principle, via `node:` compatibility and an
-`npm:` specifier, but nothing here verifies that.
-
-## Project layout
-
-Put documents wherever you like — beside the code they describe, or in a `docs/`
-tree. The tool does not care. Your `tsconfig.json` does, and it fails in a
-different way for each.
-
-**The rule: treat `.verify.ts` exactly like `.test.ts`.** It is TypeScript that
-should be _checked_ but not _shipped_, which is a problem your project has
-already solved once.
-
-Concretely, two configs — a wide one for checking and the editor, a narrow one
-for building:
-
-```jsonc
-// tsconfig.json — what gets typechecked
-{ "compilerOptions": { "noEmit": true }, "include": ["src", "docs"] }
-
-// tsconfig.build.json — what gets compiled
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": false, "outDir": "dist", "rootDir": "src" },
-  "include": ["src"],
-  "exclude": ["**/*.verify.ts", "**/*.test.ts"]
-}
-```
-
-Without that split you hit one of these:
-
-| Layout                                              | What goes wrong                                                                                                              |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `docs/` beside `src/`, `"include": ["src"]`         | Glue is **never typechecked**. A real type error in a handler is invisible — Bun strips types, so the document still passes. |
-| `docs/` added to `include`, with `"rootDir": "src"` | `TS6059: File 'docs/x.verify.ts' is not under 'rootDir'`.                                                                    |
-| Co-located `src/**/*.verify.ts`                     | Typechecked correctly, but the glue **compiles into your production build** (`dist/billing/billing.verify.js`).              |
-
-The first is the dangerous one, because nothing tells you.
-
-Glue can import application code however the rest of your project does —
-`tsconfig` path aliases work, since Bun reads them.
-
 ## Glue code
 
 ```ts
@@ -198,6 +245,27 @@ verify.list("settlementRules", (item) => {
 Return normally to pass, throw to fail. Any assertion library works, including
 none.
 
+| Registration                   | Handler receives                   |
+| ------------------------------ | ---------------------------------- |
+| `verify.table(id, fn)`         | one `TableRow` per data row        |
+| `verify.table.all(id, fn)`     | the whole `ParsedTable`            |
+| `verify.mermaid(id, fn)`       | the whole `MermaidGraph`           |
+| `verify.mermaid.edges(id, fn)` | one `MermaidEdge` per edge         |
+| `verify.list(id, fn)`          | one `ListItem` per item            |
+| `verify.list.all(id, fn)`      | the whole `ParsedList`             |
+| `verify.type(name, fn)`        | — registers a `Schema:` value type |
+
+`MermaidGraph` carries `nodes`, `edges` and `subgraphs`, plus `node(id)`,
+`from(id)`, `to(id)`, `hasEdge(a, b)`, `hasPath(a, b)`, `roots()` and
+`leaves()`.
+
+One anchor may carry both an `each` and an `all` handler — they answer
+different questions about the same asset. Registering the same mode twice is
+still an error, so typos are still caught.
+
+Glue is located by, in order: `--glue`, a `<!-- verify: ./x.verify.ts -->` hint
+in the document, then `<name>.verify.ts` beside the Markdown file.
+
 ### Assertions
 
 A failure message here is not a test log — it is **written into the Markdown
@@ -224,27 +292,6 @@ terms of the claim:
 Third-party libraries keep working — a handler fails by throwing and that is
 not going away. Multi-line messages keep their structure in the document rather
 than being flattened onto one line.
-
-| Registration                   | Handler receives                   |
-| ------------------------------ | ---------------------------------- |
-| `verify.table(id, fn)`         | one `TableRow` per data row        |
-| `verify.table.all(id, fn)`     | the whole `ParsedTable`            |
-| `verify.mermaid(id, fn)`       | the whole `MermaidGraph`           |
-| `verify.mermaid.edges(id, fn)` | one `MermaidEdge` per edge         |
-| `verify.list(id, fn)`          | one `ListItem` per item            |
-| `verify.list.all(id, fn)`      | the whole `ParsedList`             |
-| `verify.type(name, fn)`        | — registers a `Schema:` value type |
-
-`MermaidGraph` carries `nodes`, `edges` and `subgraphs`, plus `node(id)`,
-`from(id)`, `to(id)`, `hasEdge(a, b)`, `hasPath(a, b)`, `roots()` and
-`leaves()`.
-
-One anchor may carry both an `each` and an `all` handler — they answer
-different questions about the same asset. Registering the same mode twice is
-still an error, so typos are still caught.
-
-Glue is located by, in order: `--glue`, a `<!-- verify: ./x.verify.ts -->` hint
-in the document, then `<name>.verify.ts` beside the Markdown file.
 
 ## Completeness
 
@@ -307,8 +354,8 @@ pass entirely.
 ## Reviews: the parts that cannot be executed
 
 Most of a good document is prose — rationale, context, the reason a rule exists
-at all. That is usually the part worth reading, and it is the part that rots
-silently.
+at all. That is usually the part worth reading, and nothing fails when it
+becomes wrong.
 
 A review does not try to verify prose. It records which code a section
 describes, and a digest of that code at the moment someone last read the two
@@ -336,9 +383,10 @@ Digests ignore line endings, so a mixed Windows/Unix team does not see
 everything go stale.
 
 Point `Covers:` at a **symbol** rather than a whole file. A file-level target is
-invalidated by every unrelated edit in that file, and a review that cries wolf
-gets stamped without being read. Symbol targets ignore edits elsewhere in the
-file, and ignore changes to leading comments.
+invalidated by every unrelated edit in that file, and a review that is flagged
+by edits it has nothing to do with gets stamped without being read. Symbol
+targets ignore edits elsewhere in the file, and ignore changes to leading
+comments.
 
 ### Which documents describe this code?
 
@@ -354,7 +402,7 @@ Reviews covering src/parser.ts:
 Run it on the files a change touched. Anything listed describes code that just
 moved.
 
-## Bi-directional state
+## Writing results back into the document
 
 `--write` folds the result of a run back into the document. The glyph changes,
 and each failure is recorded as an HTML comment directly above the asset that
@@ -373,8 +421,8 @@ Cart --> Payment[Payment Info]
 ```
 
 Comments are invisible in every renderer, so the page still reads as prose. For
-an agent, the failure text sits at exactly the place that has to change — no
-separate log to correlate against the document.
+an agent, the failure text is placed at exactly the point that has to change,
+with no separate log to correlate against the document.
 
 Three properties this relies on, all covered by the test suite:
 
@@ -458,7 +506,80 @@ isolates the registry per document; cases keep their own handler afterwards.
 `planCases()` is the lower-level primitive if you need it. See
 [`spec.test.ts`](./spec.test.ts).
 
-## Layout
+## Runtimes
+
+The tool imports your `.verify.ts` glue at runtime, so what matters is how each
+runtime handles TypeScript.
+
+|          | Glue TypeScript                      |
+| -------- | ------------------------------------ |
+| Bun      | Fully transformed. Everything works. |
+| Node 24+ | Type **stripping** only — see below. |
+
+Node strips types rather than transforming them, so a few TypeScript features
+do not survive **in glue, or in anything glue imports as `.ts`**:
+
+```
+enum, namespace, parameter properties (constructor(readonly x: string)), decorators
+```
+
+Types, interfaces, generics, `as const`, `satisfies` and type-only exports are
+all fine. In practice glue is plain functions, so this rarely matters — the
+case that does is glue importing an `enum` from your application code.
+
+The fix is one line:
+
+```bash
+NODE_OPTIONS=--experimental-transform-types npx md-verified docs/thing.md
+```
+
+The published bin uses a `node` shebang so `npx` works out of the box. To run it
+under Bun instead — which has none of the above limits — use `bunx --bun
+md-verified` or `bun node_modules/md-verified/dist/check.js`.
+
+Deno is untested. It should work in principle, via `node:` compatibility and an
+`npm:` specifier, but nothing here verifies that.
+
+## Where to put documents and glue
+
+Put documents wherever you like — beside the code they describe, or in a `docs/`
+tree. The tool does not care. Your `tsconfig.json` does, and it fails in a
+different way for each.
+
+**The rule: treat `.verify.ts` exactly like `.test.ts`.** It is TypeScript that
+should be _checked_ but not _shipped_, which is a problem your project has
+already solved once.
+
+Concretely, two configs — a wide one for checking and the editor, a narrow one
+for building:
+
+```jsonc
+// tsconfig.json — what gets typechecked
+{ "compilerOptions": { "noEmit": true }, "include": ["src", "docs"] }
+
+// tsconfig.build.json — what gets compiled
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "outDir": "dist", "rootDir": "src" },
+  "include": ["src"],
+  "exclude": ["**/*.verify.ts", "**/*.test.ts"]
+}
+```
+
+Without that split you hit one of these:
+
+| Layout                                              | What goes wrong                                                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `docs/` beside `src/`, `"include": ["src"]`         | Glue is **never typechecked**. A real type error in a handler is invisible — Bun strips types, so the document still passes. |
+| `docs/` added to `include`, with `"rootDir": "src"` | `TS6059: File 'docs/x.verify.ts' is not under 'rootDir'`.                                                                    |
+| Co-located `src/**/*.verify.ts`                     | Typechecked correctly, but the glue **compiles into your production build** (`dist/billing/billing.verify.js`).              |
+
+The first is the dangerous one, because nothing tells you.
+
+Glue can import application code however the rest of your project does —
+`tsconfig` path aliases work, since Bun reads them.
+
+## Source files
 
 | File                                                     |                                                              |
 | -------------------------------------------------------- | ------------------------------------------------------------ |
