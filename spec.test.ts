@@ -6,7 +6,7 @@
  * is reported by the test runner with the document line it came from. The rest
  * of the file is ordinary unit coverage for the parsing layers.
  */
-import { describe, expect, test, beforeAll } from 'bun:test';
+import { afterAll, describe, expect, test, beforeAll } from 'bun:test';
 import { resolve } from 'node:path';
 
 import {
@@ -25,6 +25,11 @@ import {
   parseMarkdown,
   parseMermaid,
   parseSchema,
+  countAssertion,
+  formatRun,
+  setColor,
+  propertiesOf,
+  typeMembers,
   loadDocument,
   planCases,
   rewriteMarkdown,
@@ -852,6 +857,162 @@ describe('assertions', () => {
 // ---------------------------------------------------------------------------
 // Reviews: staleness for the prose that cannot be executed
 // ---------------------------------------------------------------------------
+
+describe('type introspection', () => {
+  const SRC = 'examples/.tmp-types.ts';
+  /** What glue passes: a URL, so the answer does not depend on the cwd. */
+  const mod = () => new URL(`file://${resolve(SRC)}`);
+
+  beforeAll(async () => {
+    await Bun.write(SRC, [
+      "/** Doc comment naming 'notAMember' in prose. */",
+      "export type OutcomeKind = 'success' | 'note-error' | 'no-result';",
+      "export type Single = 'only';",
+      'export type NotLiterals = string | number;',
+      'const lookup = { a: 1 };',
+      'export type Referenced = keyof typeof lookup;',
+      'export interface ActionEffects {',
+      '  commit(): void;',
+      '  revert(): void;',
+      '  readonly label: string;',
+      '}',
+      'export interface Extended extends ActionEffects { extra: number }',
+      'export type ObjectAlias = { alpha: string; beta: number };',
+      "export enum Colour { Red = 'red', Blue = 'blue' }",
+      '',
+    ].join('\n'));
+    clearSymbolCache();
+  });
+
+  afterAll(async () => {
+    await Bun.file(SRC).delete();
+    clearSymbolCache();
+  });
+
+  test('reads a string-literal union in declaration order', () => {
+    expect(typeMembers(mod(), 'OutcomeKind')).toEqual(['success', 'note-error', 'no-result']);
+  });
+
+  // The regex this replaces sliced raw source, so a string inside a doc comment
+  // landed in the member list. Reading the declaration node cannot.
+  test('ignores string literals in the leading doc comment', () => {
+    expect(typeMembers(mod(), 'OutcomeKind')).not.toContain('notAMember');
+  });
+
+  test('handles a single-member union', () => {
+    expect(typeMembers(mod(), 'Single')).toEqual(['only']);
+  });
+
+  test('reads enum member names', () => {
+    expect(typeMembers(mod(), 'Colour')).toEqual(['Red', 'Blue']);
+  });
+
+  // Refusing beats guessing: an empty member list would make `covers()` pass
+  // against nothing, which is the failure this API exists to remove.
+  test('refuses a union that is not all string literals', () => {
+    expect(() => typeMembers(mod(), 'NotLiterals')).toThrow(/not a union of string literals/);
+  });
+
+  test('refuses a union built by reference, which needs a type checker', () => {
+    expect(() => typeMembers(mod(), 'Referenced')).toThrow(/keyof typeof lookup/);
+  });
+
+  test('points at propertiesOf when given an interface', () => {
+    expect(() => typeMembers(mod(), 'ActionEffects')).toThrow(/use propertiesOf/);
+  });
+
+  test('names what the module does export when the symbol is missing', () => {
+    expect(() => typeMembers(mod(), 'Nope')).toThrow(/exports no `Nope`.*OutcomeKind/s);
+  });
+
+  test('reads interface properties and methods', () => {
+    expect(propertiesOf(mod(), 'ActionEffects')).toEqual(['commit', 'revert', 'label']);
+  });
+
+  test('reads an object type alias', () => {
+    expect(propertiesOf(mod(), 'ObjectAlias')).toEqual(['alpha', 'beta']);
+  });
+
+  test('refuses an interface with a heritage clause rather than half-answering', () => {
+    expect(() => propertiesOf(mod(), 'Extended')).toThrow(/extends another type/);
+  });
+
+  test('points at typeMembers when given a union', () => {
+    expect(() => propertiesOf(mod(), 'OutcomeKind')).toThrow(/use typeMembers/);
+  });
+
+  test('a bare relative string resolves against the working directory', () => {
+    expect(typeMembers(SRC, 'Single')).toEqual(['only']);
+  });
+});
+
+describe('assertion counting', () => {
+  const doc = (rows: string) =>
+    parseMarkdown(`> 🛠️ **Verified Data:** \`t\`\n\n| a |\n| - |\n${rows}`, 't.md');
+
+  test('a handler that asserts nothing is counted, and still passes', async () => {
+    verify.reset();
+    verify.table('t', () => {});
+    const run = await runParsed(doc('| 1 |\n| 2 |\n'), { links: false });
+
+    expect(run.anchors[0]!.status).toBe('passed');
+    expect(run.anchors[0]!.cases.map((c) => c.assertions)).toEqual([0, 0]);
+    expect(run.summary.casesUnasserted).toBe(2);
+  });
+
+  test('each helper counts once', async () => {
+    verify.reset();
+    verify.table('t', (row) => {
+      assert(row['a'] !== undefined, 'present');
+      equals(row['a'], row['a'], 'self');
+      oneOf(row['a'], [row['a']], 'self');
+      covers([row['a']], [row['a']]);
+    });
+    const run = await runParsed(doc('| 1 |\n'), { links: false });
+
+    expect(run.anchors[0]!.cases[0]!.assertions).toBe(4);
+    expect(run.summary.casesUnasserted).toBe(0);
+  });
+
+  // The count is what the case did, not whether it succeeded -- a failing
+  // assertion is still an assertion.
+  test('a failing assertion counts', async () => {
+    verify.reset();
+    verify.table('t', () => assert(false, 'nope'));
+    const run = await runParsed(doc('| 1 |\n'), { links: false });
+
+    expect(run.anchors[0]!.cases[0]!.status).toBe('failed');
+    expect(run.anchors[0]!.cases[0]!.assertions).toBe(1);
+    // Only *passing* cases that asserted nothing are misleading.
+    expect(run.summary.casesUnasserted).toBe(0);
+  });
+
+  test('assertions made inside a helper still count', async () => {
+    verify.reset();
+    const check = (v: unknown) => assert(v !== undefined, 'present');
+    verify.table('t', (row) => check(row['a']));
+    const run = await runParsed(doc('| 1 |\n'), { links: false });
+
+    expect(run.anchors[0]!.cases[0]!.assertions).toBe(1);
+  });
+
+  test('countAssertion lets a custom helper opt in', async () => {
+    verify.reset();
+    verify.table('t', () => { countAssertion(); });
+    const run = await runParsed(doc('| 1 |\n'), { links: false });
+
+    expect(run.summary.casesUnasserted).toBe(0);
+  });
+
+  test('the anchor line says how many cases checked nothing', async () => {
+    verify.reset();
+    verify.table('t', () => {});
+    const run = await runParsed(doc('| 1 |\n| 2 |\n'), { links: false });
+
+    setColor(false);
+    expect(formatRun(run)).toContain('2 of 2 cases made no assertion');
+  });
+});
 
 describe('reviews', () => {
   let n = 0;

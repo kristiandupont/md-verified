@@ -1,6 +1,6 @@
 /** Public entry point. */
 export { verify, getRegistrations, registrations } from './framework.ts';
-export { assert, equals, oneOf, format } from './assertions.ts';
+export { assert, equals, oneOf, format, assertionCount, countAssertion } from './assertions.ts';
 export type {
   VerifyContext,
   RowHandler,
@@ -15,7 +15,14 @@ export { parseMarkdown, parseSchema, parseCovers, findGlueHint, LABEL_KINDS } fr
 export { covers } from './covers.ts';
 export { checkReviews, digestOf } from './reviews.ts';
 export type { ReviewOptions } from './reviews.ts';
-export { exportedNames, exportedSymbol, exportedSymbols, clearSymbolCache } from './symbols.ts';
+export {
+  exportedNames,
+  exportedSymbol,
+  exportedSymbols,
+  typeMembers,
+  propertiesOf,
+  clearSymbolCache,
+} from './symbols.ts';
 export type { SymbolInfo } from './symbols.ts';
 export type { CoversOptions } from './covers.ts';
 export {

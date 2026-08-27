@@ -358,8 +358,17 @@ export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): 
         : '';
     const reason = a.status === 'skipped' && a.reason ? c.dim(` \u2014 ${a.reason}`) : '';
 
+    // A green anchor whose handler asserted nothing is the one case where a
+    // checkmark actively misleads the reader, so it is called out on the
+    // anchor's own line rather than left to a summary.
+    const silent = a.cases.filter((x) => x.status === 'passed' && x.assertions === 0).length;
+    const note =
+      a.status === 'passed' && silent > 0
+        ? c.yellow(` \u2014 ${silent} of ${a.cases.length} case${a.cases.length === 1 ? '' : 's'} made no assertion`)
+        : '';
+
     out.push(
-      `  ${MARK[a.status]!()} ${a.id}${counts} ${c.dim(`(${a.kind}, line ${a.line})`)}${reason}`,
+      `  ${MARK[a.status]!()} ${a.id}${counts} ${c.dim(`(${a.kind}, line ${a.line})`)}${reason}${note}`,
     );
 
     if (a.status === 'failed' && a.reason) {

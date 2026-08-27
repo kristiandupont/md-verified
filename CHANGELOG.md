@@ -34,8 +34,30 @@ While the major version is `0`, a minor bump may contain breaking changes.
   glue whose import graph uses extensionless relative specifiers resolves.
   Repeatable, and ignored under Bun, which needs no loader.
 
+- `typeMembers(module, name)` returns the string-literal members of a union
+  type, or an enum's member names, read off the declaration. `covers()` against
+  it expresses "this table's rows are exactly the members of that type" without
+  a hand-written source parser in glue. Both it and `propertiesOf()` accept a
+  `URL`, so a path in glue resolves against the glue file rather than the
+  working directory.
+- `propertiesOf(module, name)` returns the property and method names an
+  interface, object type alias or class declares.
+- `assertionCount()` and `countAssertion()`, for counting assertions made by
+  your own helpers.
+- `CaseResult.assertions` and `RunSummary.casesUnasserted`, both also in
+  `--json` output.
+
 ### Fixed
 
+- A passing anchor whose handler asserted nothing is now reported as such:
+  `✔ noop 2/2 (table, line 3) — 2 of 2 cases made no assertion`. Throwing is the
+  whole contract, so a handler that checks nothing passes; that is the one case
+  where a green anchor misleads its reader. It stays a note rather than a
+  failure because a handler using a third-party assertion library is checking
+  something this cannot see.
+- `exportedNames()` and `exportedSymbol()` were exported from the entry point
+  but documented nowhere, so glue that needed a symbol's declaration text
+  reached for a regex over raw source instead. Both are now in the README.
 - A glue file that fails to load with `ERR_MODULE_NOT_FOUND` on an extensionless
   specifier now says so, and names the fix. The bare Node message points at a
   module and a file the reader did not write the import in, so it read as a bug
