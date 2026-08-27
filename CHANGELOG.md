@@ -8,6 +8,14 @@ While the major version is `0`, a minor bump may contain breaking changes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-08-27
+
+Three defects in the trust model, and the Node runtime documented correctly for
+the first time. Both breaking changes make a previously-green run go red; in
+each case the run was green because a check had silently stopped happening.
+
 ### Changed
 
 - **Breaking:** an anchor with no registered handler is now a **failure**, not a
@@ -29,11 +37,9 @@ While the major version is `0`, a minor bump may contain breaking changes.
   which defeated the point of per-section attestation.
 - `--force`, to stamp despite failing anchors.
 - `stamps()`, exported, deciding whether a run stamps a given review id.
-
 - `--import <loader>` re-runs the command under `node --import <loader>`, so
   glue whose import graph uses extensionless relative specifiers resolves.
   Repeatable, and ignored under Bun, which needs no loader.
-
 - `typeMembers(module, name)` returns the string-literal members of a union
   type, or an enum's member names, read off the declaration. `covers()` against
   it expresses "this table's rows are exactly the members of that type" without
@@ -113,6 +119,5 @@ Initial release.
   failed, and `--reset` to undo it.
 - `--json` output, `--only`, `--bail`, `--timeout` and `--covering`.
 
-[Unreleased]: https://github.com/kristiandupont/md-verified/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/kristiandupont/md-verified/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/kristiandupont/md-verified/releases/tag/v0.1.0
+[Unreleased]: https://github.com/kristiandupont/md-verified/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kristiandupont/md-verified/releases/tag/v0.2.0
