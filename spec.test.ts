@@ -64,10 +64,6 @@ describe('spec.md', () => {
     describe(`${anchor.id} (${anchor.kind}, line ${anchor.line})`, () => {
       const plan = planCases(anchor, SPEC);
 
-      if (plan.skipReason) {
-        test.skip(plan.skipReason, () => {});
-        return;
-      }
       if (plan.failReason) {
         test('binds cleanly', () => { throw new Error(plan.failReason!); });
         return;
@@ -543,14 +539,17 @@ describe('registry', () => {
     expect(run.anchors[0]!.cases.map((x) => x.name)).toEqual(['row 1', 'row 2', 'whole table']);
   });
 
-  test('skips an anchor with no handler', async () => {
+  // An unbound anchor must not exit 0: a mistyped id would otherwise delete the
+  // check silently and leave CI green.
+  test('fails an anchor with no handler', async () => {
     verify.reset();
     const p = parseMarkdown('> 🛠️ **Verified Data:** `nobody`\n\n| A |\n| - |\n| 1 |\n', 't.md');
     const run = await runParsed(p);
 
-    expect(run.anchors[0]!.status).toBe('skipped');
+    expect(run.anchors[0]!.status).toBe('failed');
     expect(run.anchors[0]!.reason).toMatch(/no handler registered/);
-    expect(run.ok).toBe(true);
+    expect(run.anchors[0]!.reason).toMatch(/verify\.table\('nobody', \.\.\.\)/);
+    expect(run.ok).toBe(false);
   });
 
   test('fails an anchor whose handler is the wrong kind', async () => {
@@ -986,6 +985,33 @@ describe('reviews', () => {
     });
   });
 
+  // A stamp attests that a person read *that section*. Stamping every review
+  // because one was re-read files an attestation for sections nobody opened.
+  test('--stamp <id> stamps only the named review', async () => {
+    const two = (mod: string) =>
+      [
+        '# Two', '',
+        '> 👁️ **Reviewed:** `alpha`', `> **Covers:** \`${mod}#covered\``, '', 'Prose A.', '',
+        '> 👁️ **Reviewed:** `beta`', `> **Covers:** \`${mod}#covered\``, '', 'Prose B.', '',
+      ].join('\n');
+
+    await scratch(MODULE, two, async ({ doc }) => {
+      const { parsed, result } = await run(doc);
+      const out = rewriteFromRun(result, parsed, { stamp: ['alpha'] });
+
+      expect(out).toContain('> ✅ **Reviewed:** `alpha`');
+      expect(out).not.toContain('> ✅ **Reviewed:** `beta`');
+      expect(out.match(/\*\*Digest:\*\*/g)).toHaveLength(1);
+    });
+  });
+
+  test('an empty stamp list stamps nothing', async () => {
+    await scratch(MODULE, docWith(), async ({ doc }) => {
+      const { parsed, result } = await run(doc);
+      expect(rewriteFromRun(result, parsed, { stamp: [] })).not.toContain('**Digest:**');
+    });
+  });
+
   test('--write never stamps: an attestation must be deliberate', async () => {
     await scratch(MODULE, docWith(), async ({ doc }) => {
       const { parsed, result } = await run(doc);
@@ -1292,6 +1318,103 @@ describe('cli', () => {
     ]);
     return { code: await proc.exited, stdout, stderr };
   };
+
+  // --- stamping ---------------------------------------------------------
+
+  let stampN = 0;
+  /** A throwaway document, optionally carrying an anchor that always fails. */
+  const stampDoc = async (
+    fn: (doc: string) => Promise<void>,
+    opts: { failing?: boolean } = {},
+  ) => {
+    const tag = `${process.pid}-${stampN++}`;
+    const doc = `examples/.tmp-stamp-${tag}.md`;
+    const glue = `examples/.tmp-stamp-${tag}.verify.ts`;
+
+    await Bun.write(doc, [
+      '# Stamping', '',
+      '> 👁️ **Reviewed:** `alpha`', '> **Covers:** `./checkout.ts#calculateTotal`', '', 'Prose A.', '',
+      '> 👁️ **Reviewed:** `beta`', '> **Covers:** `./checkout.ts#calculateTotal`', '', 'Prose B.', '',
+      ...(opts.failing
+        ? ['> 🛠️ **Verified Data:** `bad`', '', '| c |', '| - |', '| 9 |', '']
+        : []),
+    ].join('\n'));
+
+    await Bun.write(glue, opts.failing
+      ? "import { verify, assert } from '../src/index.ts';\nverify.table('bad', () => assert(false, 'always wrong'));\n"
+      : "import { verify } from '../src/index.ts';\n");
+
+    try {
+      await fn(doc);
+    } finally {
+      await Bun.file(doc).delete();
+      await Bun.file(glue).delete();
+    }
+  };
+
+  const digests = async (doc: string) =>
+    (await Bun.file(doc).text()).match(/\*\*Digest:\*\*/g)?.length ?? 0;
+
+  test('--stamp <id> stamps only that review', async () => {
+    await stampDoc(async (doc) => {
+      const r = await run([doc, '--stamp', 'alpha']);
+      expect(await digests(doc)).toBe(1);
+      // beta is still unstamped, so the run is not green.
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain('1/2 reviews current');
+    });
+  });
+
+  test('--stamp is repeatable and accepts --stamp=<id>', async () => {
+    await stampDoc(async (doc) => {
+      const r = await run([doc, '--stamp', 'alpha', '--stamp=beta']);
+      expect(await digests(doc)).toBe(2);
+      expect(r.code).toBe(0);
+    });
+  });
+
+  test('bare --stamp still stamps every review', async () => {
+    await stampDoc(async (doc) => {
+      expect((await run([doc, '--stamp'])).code).toBe(0);
+      expect(await digests(doc)).toBe(2);
+    });
+  });
+
+  // `--stamp` takes an optional value, so the token after it must not swallow
+  // the document argument.
+  test('--stamp does not consume a following file argument', async () => {
+    await stampDoc(async (doc) => {
+      expect((await run(['--stamp', doc])).code).toBe(0);
+      expect(await digests(doc)).toBe(2);
+    });
+  });
+
+  test('--stamp with an id that names no review is an error', async () => {
+    await stampDoc(async (doc) => {
+      const r = await run([doc, '--stamp', 'nosuchreview']);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('no review named `nosuchreview`');
+      expect(await digests(doc)).toBe(0);
+    });
+  });
+
+  // The document and the code demonstrably disagree, so a reading of the two
+  // together cannot have concluded they match.
+  test('--stamp refuses to record an attestation while an anchor fails', async () => {
+    await stampDoc(async (doc) => {
+      const r = await run([doc, '--stamp']);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('refusing to stamp');
+      expect(await digests(doc)).toBe(0);
+    }, { failing: true });
+  });
+
+  test('--force stamps anyway', async () => {
+    await stampDoc(async (doc) => {
+      await run([doc, '--stamp', '--force']);
+      expect(await digests(doc)).toBe(2);
+    }, { failing: true });
+  });
 
   test('exits 0 on a passing document', async () => {
     const r = await run([SPEC]);

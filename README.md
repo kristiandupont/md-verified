@@ -375,6 +375,14 @@ or pretending prose can be executed.
 `--stamp` records the digest. It is **separate from `--write` on purpose**: a
 stamp applied as a side effect of a normal run would attest to nothing.
 
+Name the review you actually re-read — `--stamp settlement`, repeatable. Bare
+`--stamp` stamps every review in the document, which in a document with six of
+them files an attestation for five sections nobody opened.
+
+`--stamp` also refuses to run while an anchor is failing: the document and the
+code demonstrably disagree at that point, so a reading of the two together
+cannot have concluded they match. `--force` overrides it.
+
 The `1:` prefix is the digest format version. It exists so that a future change
 to the algorithm can be reported as "re-stamp needed" rather than as "the code
 changed", which would be a lie and would train people to stamp blindly.
@@ -444,7 +452,9 @@ md-verified <file.md|glob> [...] [options]
   --report        Print the annotated Markdown to stdout instead
   --reset         Return anchors to their unrun state
   --json          Machine-readable results, for agents and CI
-  --stamp         Record reviews as read (never implied by --write)
+  --stamp [id]    Record a review as read (repeatable; never implied by
+                  --write). With no id, stamps every review in the document
+  --force         Allow --stamp on a run with failing anchors
   --covering <p>  List the reviews that cover a source file
   --no-links      Skip link, anchor and symbol checking
   --no-symbols    Skip symbol checking
@@ -455,8 +465,10 @@ md-verified <file.md|glob> [...] [options]
   --verbose, -v   Show passing cases and stack frames
 ```
 
-Exit code is 0 only when every anchor passed, every anchor bound cleanly, every
-reference resolved, and every review is current.
+Exit code is 0 only when every anchor passed, every anchor bound to a handler,
+every reference resolved, and every review is current. An anchor with no
+handler is a failure, not a skip — otherwise a mistyped id would delete the
+check and leave the run green.
 
 ### How things fail
 
@@ -465,7 +477,7 @@ reference resolved, and every review is current.
 | Handler throws              | a failed case                | yes                             |
 | A cell will not coerce      | a failed case, that row only | yes                             |
 | Schema or diagram malformed | a failed anchor              | yes                             |
-| No handler registered       | a skipped anchor             | yes                             |
+| No handler registered       | a failed anchor              | yes                             |
 | Broken link or symbol       | a problem, with `line:col`   | no — it is prose, not an anchor |
 | Covered code changed        | a stale review               | yes                             |
 
