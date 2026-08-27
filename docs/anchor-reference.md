@@ -83,9 +83,12 @@ it.
 | 🛠️    | `pending` | Never run, or reset. The author's starting state.         |
 | ✅    | `passed`  | Every case passed on the last run.                        |
 | ❌    | `failed`  | At least one case failed. Details in the comment below.   |
-| ⚠️    | `skipped` | No handler is registered for this id.                     |
+| ⚠️    | `skipped` | Not run: filtered out by `--only`, or after `--bail`.      |
 
 A review carries 👁️ until it is stamped, then ✅ or ❌ like anything else.
+
+An anchor with no registered handler is `failed`, not `skipped`: a mistyped
+id would otherwise remove the check and leave the run green.
 
 ## What this page does not check
 

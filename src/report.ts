@@ -48,13 +48,23 @@ export interface RewriteOptions {
   /** Ignore results and return every anchor to its unrun state. */
   reset?: boolean;
   /**
-   * Record the current digest on every review, marking it as read.
+   * Record the current digest on reviews, marking them as read.
    *
-   * Deliberately separate from a normal write: a stamp asserts that a person
-   * or agent has read the section against the code it covers. Applying it as a
-   * side effect of `--write` would make the attestation worthless.
+   * `true` stamps every review in the document; an array of ids stamps only
+   * those. The narrow form matters: a stamp asserts that a person or agent has
+   * read *that section* against the code it covers, so stamping six reviews
+   * because one was re-read attests to five nobody opened.
+   *
+   * Deliberately separate from a normal write: applying a stamp as a side
+   * effect of `--write` would make the attestation worthless.
    */
-  stamp?: boolean;
+  stamp?: boolean | string[];
+}
+
+/** Whether this run stamps the review with `id`. */
+export function stamps(stamp: RewriteOptions['stamp'], id: string): boolean {
+  if (stamp === true) return true;
+  return Array.isArray(stamp) && stamp.includes(id);
 }
 
 /**
@@ -113,7 +123,7 @@ export function rewriteMarkdown(
 
     // Stamping resolves the very thing the comment would report, so it clears
     // the note rather than writing one.
-    const stamped = options.stamp === true && Boolean(result?.digest);
+    const stamped = stamps(options.stamp, review.id) && Boolean(result?.digest);
     const comments =
       options.reset || stamped || status !== 'failed' || !result?.reason
         ? []
@@ -128,6 +138,7 @@ export function rewriteMarkdown(
           status,
           result,
           options,
+          stamped,
         ) + rewriteGap(source.slice(review.gapRange.start, review.gapRange.end), comments),
     });
   }
@@ -165,12 +176,12 @@ function rewriteReviewQuote(
   status: Status,
   result: ReviewResult | undefined,
   options: RewriteOptions,
+  stamping: boolean,
 ): string {
   const lines = quote.split('\n');
   const head = REVIEW_LINE_RE.exec(lines[0] ?? '');
   if (!head) return quote;
 
-  const stamping = options.stamp === true && result?.digest;
   const glyph = options.reset
     ? REVIEW_PENDING_GLYPH
     : stamping

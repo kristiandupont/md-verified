@@ -125,7 +125,6 @@ export async function runAnchor(
 ): Promise<AnchorResult> {
   const plan = planCases(anchor, file);
 
-  if (plan.skipReason) return skipped(anchor, plan.skipReason);
   if (plan.failReason) {
     return { ...base(anchor), status: 'failed', reason: plan.failReason, cases: [] };
   }
@@ -161,8 +160,6 @@ export interface PlannedCase {
 }
 
 export interface Plan {
-  /** Set when the anchor is not this run's business at all. */
-  skipReason: string | null;
   /** Set when the anchor fails as a whole, before any case runs. */
   failReason: string | null;
   cases: PlannedCase[];
@@ -179,13 +176,20 @@ export function planCases(anchor: Anchor, file: string): Plan {
   const registrations = getRegistrations(anchor.id);
 
   if (registrations.length === 0) {
-    return { skipReason: `no handler registered for \`${anchor.id}\``, failReason: null, cases: [] };
+    // A skip here would exit 0, so a mistyped id or a deleted handler would
+    // remove the check while CI stayed green -- the one failure mode the whole
+    // tool exists to prevent.
+    return {
+      failReason:
+        `no handler registered for \`${anchor.id}\`; ` +
+        `add verify.${anchor.kind}('${anchor.id}', ...) to the glue file, or remove the anchor`,
+      cases: [],
+    };
   }
 
   const wrongKind = registrations.find((r) => r.kind !== anchor.kind);
   if (wrongKind) {
     return {
-      skipReason: null,
       failReason: `handler for \`${anchor.id}\` is registered as verify.${wrongKind.kind}, but the document binds it to a ${anchor.kind}`,
       cases: [],
     };
@@ -194,7 +198,7 @@ export function planCases(anchor: Anchor, file: string): Plan {
   // The asset itself could not be read: fail the anchor, but keep it bound so
   // the reason is written back into the document.
   if (anchor.defect) {
-    return { skipReason: null, failReason: anchor.defect, cases: [] };
+    return { failReason: anchor.defect, cases: [] };
   }
 
   const ctx: VerifyContext = {
@@ -248,7 +252,7 @@ export function planCases(anchor: Anchor, file: string): Plan {
     }
   }
 
-  return { skipReason: null, failReason: null, cases };
+  return { failReason: null, cases };
 }
 
 // ---------------------------------------------------------------------------
@@ -344,8 +348,6 @@ export interface DocumentSuite {
   kind: AnchorKind;
   label: string;
   line: number;
-  /** Set when the anchor has no handler. */
-  skipReason: string | null;
   /** Set when the anchor fails as a whole, before any case runs. */
   failReason: string | null;
   cases: PlannedCase[];
@@ -402,7 +404,6 @@ export async function loadDocument(
       kind: anchor.kind,
       label: anchor.label,
       line: anchor.line,
-      skipReason: plan.skipReason,
       failReason: plan.failReason,
       cases: plan.cases,
     };

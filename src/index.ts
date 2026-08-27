@@ -30,5 +30,5 @@ export { parseMermaid, MermaidParseError } from './mermaid.ts';
 export { coerce, registerType, knownTypes, hasType, CoercionError } from './coerce.ts';
 export { runFile, runParsed, runAnchor, planCases, loadDocument, resolveGlue, loadGlue } from './runner.ts';
 export type { RunOptions, Plan, PlannedCase, LoadedDocument, DocumentSuite } from './runner.ts';
-export { rewriteMarkdown, rewriteFromRun, formatRun, setColor, c } from './report.ts';
+export { rewriteMarkdown, rewriteFromRun, formatRun, setColor, stamps, c } from './report.ts';
 export * from './types.ts';

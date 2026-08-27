@@ -16,7 +16,7 @@ const DEFAULT_DOCS = '**/*.md';
 const IGNORED_DIRS = /(^|\/)(node_modules|\.git|dist|build|coverage|\.next|out)(\/|$)/;
 
 import { loadGlue, resolveGlue, runFile, type RunOptions } from './src/runner.ts';
-import { c, formatRun, rewriteFromRun, setColor } from './src/report.ts';
+import { c, formatRun, rewriteFromRun, setColor, stamps } from './src/report.ts';
 import { verify } from './src/framework.ts';
 import { parseMarkdown } from './src/parser.ts';
 import type { RunResult } from './src/types.ts';
@@ -27,7 +27,9 @@ interface Flags extends RunOptions {
   write: boolean;
   report: boolean;
   reset: boolean;
-  stamp: boolean;
+  /** `true` stamps every review; an array stamps only those ids. */
+  stamp: boolean | string[];
+  force: boolean;
   covering?: string;
   json: boolean;
   verbose: boolean;
@@ -50,8 +52,11 @@ OPTIONS
   --report          Print the annotated Markdown to stdout instead of writing.
   --reset           Return every anchor to its unrun state and drop our comments.
   --json            Emit machine-readable results (for agents and CI).
-  --stamp           Record the current digest on every review, marking the
-                    prose as read. Deliberately separate from --write.
+  --stamp [id]      Record the current digest on a review, marking that prose
+                    as read. Repeatable. With no id, stamps every review in the
+                    document -- which attests to sections you may not have read,
+                    so name the one you did. Deliberately separate from --write.
+  --force           Allow --stamp on a run that has failing anchors.
   --covering <path> Instead of checking, list the reviews that cover <path>.
                     Answers "which documents describe this code?" without
                     putting a marker in the code itself. Searches the documents
@@ -77,6 +82,7 @@ function parseArgs(argv: string[]): Flags {
     report: false,
     reset: false,
     stamp: false,
+    force: false,
     json: false,
     verbose: false,
     help: false,
@@ -85,8 +91,19 @@ function parseArgs(argv: string[]): Flags {
     timeout: 5000,
   };
 
+  const stampIds: string[] = [];
+  let stampAll = false;
+
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    let arg = argv[i]!;
+
+    // `--stamp=prose` is the unambiguous spelling of `--stamp prose`.
+    const eq = arg.indexOf('=');
+    if (eq > 2 && arg.startsWith('--')) {
+      argv = [...argv.slice(0, i), arg.slice(0, eq), arg.slice(eq + 1), ...argv.slice(i + 1)];
+      arg = argv[i]!;
+    }
+
     switch (arg) {
       case '--glue': flags.glue = argv[++i]; break;
       case '--only': flags.only!.push(argv[++i]!); break;
@@ -97,7 +114,17 @@ function parseArgs(argv: string[]): Flags {
       case '--json': flags.json = true; break;
       case '--verbose': case '-v': flags.verbose = true; break;
       case '--no-color': setColor(false); break;
-      case '--stamp': flags.stamp = true; break;
+      case '--stamp': {
+        // `--stamp` takes an optional id, so the token after it is ambiguous
+        // with a positional document. Treat it as an id only when it cannot be
+        // a file argument: anchor ids are bare words, document arguments are
+        // paths or globs.
+        const next = argv[i + 1];
+        if (next !== undefined && looksLikeId(next)) stampIds.push(argv[++i]!);
+        else stampAll = true;
+        break;
+      }
+      case '--force': flags.force = true; break;
       case '--covering': flags.covering = argv[++i]; break;
       case '--no-links': flags.links = false; break;
       case '--no-reviews': flags.reviews = false; break;
@@ -108,7 +135,22 @@ function parseArgs(argv: string[]): Flags {
         flags.files.push(arg);
     }
   }
+
+  flags.stamp = stampAll ? true : stampIds.length > 0 ? stampIds : false;
   return flags;
+}
+
+/**
+ * Could this token be an anchor id rather than a document argument?
+ *
+ * Ids are bare words. Anything with a path separator, a glob character, a
+ * `.md` suffix, or a leading dash is a file argument or another flag.
+ */
+function looksLikeId(token: string): boolean {
+  if (token.startsWith('-')) return false;
+  if (/[/\\*?[\]{}]/.test(token)) return false;
+  if (token.endsWith('.md') || token.endsWith('.markdown')) return false;
+  return !existsSync(token);
 }
 async function main(): Promise<number> {
   const flags = parseArgs(process.argv.slice(2));
@@ -219,8 +261,32 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
     reviews: flags.reviews,
   });
 
-  if (flags.write || flags.report || flags.reset || flags.stamp) {
-    const next = rewriteFromRun(run, parsed, { reset: flags.reset, stamp: flags.stamp });
+  // A stamp records that a person read this prose against this code. When an
+  // anchor is failing the document and the code demonstrably disagree, so that
+  // reading cannot have concluded they match -- stamping anyway would file an
+  // attestation the run just contradicted.
+  const wantsStamp = flags.stamp !== false;
+  const blocked = wantsStamp && !flags.force && run.summary.failed > 0;
+  const stamp = blocked ? false : flags.stamp;
+
+  if (blocked) {
+    console.error(
+      `${file}: refusing to stamp while ${run.summary.failed} anchor${run.summary.failed === 1 ? '' : 's'} ` +
+        `${run.summary.failed === 1 ? 'is' : 'are'} failing. Fix the document or the code first, or pass --force.`,
+    );
+  }
+
+  // A `--stamp` id that names no review stamps nothing at all, silently. Same
+  // failure shape as an anchor with no handler, so it gets the same treatment.
+  const unknown = Array.isArray(flags.stamp)
+    ? flags.stamp.filter((id) => !parsed.reviews.some((r) => r.id === id))
+    : [];
+  for (const id of unknown) {
+    console.error(`${file}: no review named \`${id}\` (--stamp)`);
+  }
+
+  if (flags.write || flags.report || flags.reset || stamp !== false) {
+    const next = rewriteFromRun(run, parsed, { reset: flags.reset, stamp });
 
     if (flags.report) {
       if (!flags.json) console.log(next);
@@ -232,13 +298,14 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
   // A stamped review is current from this moment on. Reporting it as stale --
   // and exiting non-zero -- would be complaining about the very thing the
   // command just resolved, and would make `--stamp && ...` impossible.
-  const settled = flags.stamp ? afterStamping(run) : run;
+  const settled = stamp !== false ? afterStamping(run, stamp) : run;
 
   if (!flags.json && !flags.report) {
     console.log(formatRun(settled, { verbose: flags.verbose }));
     console.log('');
   }
 
+  if (blocked || unknown.length) return { ...settled, ok: false };
   return settled;
 }
 
@@ -247,9 +314,9 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
  * current. Reviews that failed for a reason stamping cannot fix -- covering a
  * file that does not exist, declaring no targets -- are left failing.
  */
-function afterStamping(run: RunResult): RunResult {
+function afterStamping(run: RunResult, stamp: boolean | string[]): RunResult {
   const reviews = run.reviews.map((review) =>
-    review.status === 'failed' && review.digest !== null
+    review.status === 'failed' && review.digest !== null && stamps(stamp, review.id)
       ? { ...review, status: 'passed' as const, reason: null, current: true }
       : review,
   );
