@@ -66,16 +66,37 @@ EOF
 
 cat > docs/plans.verify.ts <<'EOF'
 import { verify, equals, covers } from 'md-verified';
-import { seatsFor, plans } from '../src/plans.ts';
+import { seatsFor, plans } from '../src/plans';
 
 verify.table('seats', (row) => equals(seatsFor(row.plan as string), row.seats, 'seats'));
 verify.table.all('seats', (t) => covers(t.rows.map((r) => r['Plan'] as string), plans()));
 EOF
 
 echo "==> installing the tarball"
-npm install --silent "$TARBALL" >/dev/null 2>&1
+npm install --silent "$TARBALL" tsx >/dev/null 2>&1
 
-CLI="$RUNTIME node_modules/md-verified/dist/check.js"
+BIN="node_modules/md-verified/dist/check.js"
+
+# The glue above imports `../src/plans`, with no extension -- the norm in any
+# project using bundler-style resolution, and something Node's ESM resolver
+# rejects outright. Node therefore needs a loader; Bun resolves it natively.
+if [ "$RUNTIME" = "node" ]; then
+  LOADER=(--import tsx)
+else
+  LOADER=()
+fi
+
+CLI="$RUNTIME $BIN ${LOADER[*]}"
+
+# Before anything else: the bare Node invocation must fail on that import, and
+# must say what to do about it. This is the failure a first-time user meets.
+if [ "$RUNTIME" = "node" ]; then
+  echo "==> [node] an extensionless import without a loader must be explained"
+  OUT="$(node "$BIN" docs/plans.md 2>&1 || true)"
+  echo "$OUT" | grep -q "requires an extension on relative imports" \
+    || { echo "FAIL: no resolver hint for an extensionless import"; echo "$OUT"; exit 1; }
+  echo "    hint shown"
+fi
 
 echo "==> [$RUNTIME] a consumer typecheck must not see our source"
 npx --yes tsc --noEmit

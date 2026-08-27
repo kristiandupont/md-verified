@@ -30,8 +30,27 @@ While the major version is `0`, a minor bump may contain breaking changes.
 - `--force`, to stamp despite failing anchors.
 - `stamps()`, exported, deciding whether a run stamps a given review id.
 
+- `--import <loader>` re-runs the command under `node --import <loader>`, so
+  glue whose import graph uses extensionless relative specifiers resolves.
+  Repeatable, and ignored under Bun, which needs no loader.
+
 ### Fixed
 
+- A glue file that fails to load with `ERR_MODULE_NOT_FOUND` on an extensionless
+  specifier now says so, and names the fix. The bare Node message points at a
+  module and a file the reader did not write the import in, so it read as a bug
+  in the glue rather than a mismatch between the project's module resolution and
+  Node's.
+- The README's Runtimes section framed Node's limitation as type stripping
+  alone, and prescribed `NODE_OPTIONS=--experimental-transform-types`. That flag
+  changes how types are compiled and has no effect on module resolution, so it
+  did not fix the failure most projects actually hit. Resolution and type
+  stripping are now documented as the separate limits they are.
+- `scripts/smoke.sh` imported application code with an explicit `.ts` extension,
+  which no bundler-resolution project does — so the only test of the published
+  shape never exercised the resolution failure. It now imports extensionlessly,
+  and the node leg asserts both that the bare invocation explains itself and
+  that `--import tsx` makes it work.
 - `--stamp` no longer records an attestation on a run with failing anchors. The
   document and the code demonstrably disagree at that point, so a reading of the
   two together cannot have concluded they match. Use `--force` to override.

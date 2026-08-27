@@ -1416,6 +1416,22 @@ describe('cli', () => {
     }, { failing: true });
   });
 
+  // The resolution hint and the re-exec itself are Node behaviour, so
+  // scripts/smoke.sh covers them on its node leg. What is testable here is that
+  // the flag parses and that Bun takes the no-loader-needed branch.
+  test('--import is parsed, and reported as unnecessary under Bun', async () => {
+    const r = await run([SPEC, '--import', 'tsx']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('--import ignored');
+    expect(r.stdout).toContain('4 passed');
+  });
+
+  test('--import is repeatable and does not swallow the document', async () => {
+    const r = await run(['--import', 'tsx', '--import', 'tsx', SPEC]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('4 passed');
+  });
+
   test('exits 0 on a passing document', async () => {
     const r = await run([SPEC]);
     expect(r.code).toBe(0);

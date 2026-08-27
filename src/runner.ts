@@ -473,10 +473,36 @@ export async function loadGlue(path: string): Promise<void> {
   } catch (err) {
     const cause = err instanceof Error ? err : new Error(String(err));
     throw new Error(
-      `glue file ${relative(process.cwd(), path)} failed to load: ${cause.message}`,
+      `glue file ${relative(process.cwd(), path)} failed to load: ${cause.message}` +
+        resolutionHint(cause),
       { cause },
     );
   }
+}
+
+/**
+ * Turn Node's resolution failure into something the reader can act on.
+ *
+ * Node's ESM resolver requires a file extension on every relative specifier.
+ * Projects configured with bundler-style resolution -- most TypeScript
+ * monorepos -- write `./classify`, not `./classify.ts`, so glue that imports
+ * application code fails on the *first extensionless import anywhere in the
+ * graph*. The bare message names a module and a file the reader did not write
+ * the import in, so it reads as a bug in the glue rather than as a mismatch
+ * between the project's resolution and Node's.
+ */
+function resolutionHint(cause: Error & { code?: string }): string {
+  if (cause.code !== 'ERR_MODULE_NOT_FOUND') return '';
+
+  const missing = /Cannot find module '([^']+)'/.exec(cause.message)?.[1];
+  if (!missing || extname(missing) !== '') return '';
+
+  return (
+    `\n\nNode's ESM resolver requires an extension on relative imports, and ` +
+    `\`${basename(missing)}\` has none. Either use extensioned specifiers ` +
+    `throughout the glue's import graph, or run with a resolver that does not:\n` +
+    `  md-verified --import tsx <files>`
+  );
 }
 
 // ---------------------------------------------------------------------------

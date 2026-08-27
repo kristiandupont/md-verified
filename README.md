@@ -455,6 +455,7 @@ md-verified <file.md|glob> [...] [options]
   --stamp [id]    Record a review as read (repeatable; never implied by
                   --write). With no id, stamps every review in the document
   --force         Allow --stamp on a run with failing anchors
+  --import <l>    Re-run under `node --import <l>` (repeatable; Bun ignores it)
   --covering <p>  List the reviews that cover a source file
   --no-links      Skip link, anchor and symbol checking
   --no-symbols    Skip symbol checking
@@ -520,13 +521,43 @@ isolates the registry per document; cases keep their own handler afterwards.
 
 ## Runtimes
 
-The tool imports your `.verify.ts` glue at runtime, so what matters is how each
-runtime handles TypeScript.
+The tool imports your `.verify.ts` glue at runtime, so what matters is how the
+runtime resolves and compiles it. Node has two separate limits; Bun has neither.
 
-|          | Glue TypeScript                      |
-| -------- | ------------------------------------ |
-| Bun      | Fully transformed. Everything works. |
-| Node 24+ | Type **stripping** only — see below. |
+|          | Module resolution                     | Glue TypeScript                      |
+| -------- | ------------------------------------- | ------------------------------------ |
+| Bun      | Extensionless imports resolve.        | Fully transformed. Everything works. |
+| Node 24+ | Every relative import needs its file extension. | Type **stripping** only.   |
+
+### Module resolution — the one most projects hit
+
+Node's ESM resolver does not add file extensions. A project configured with
+`"moduleResolution": "bundler"` — most TypeScript monorepos — writes
+`./classify`, not `./classify.ts`, and Node refuses it:
+
+```
+docs/x.md: glue file docs/x.verify.ts failed to load:
+  Cannot find module '/.../src/pipeline/classify'
+  imported from /.../src/pipeline/orchestrator.ts
+```
+
+This applies to the whole import graph, not just the glue file: one
+extensionless import anywhere your glue reaches is enough. It has nothing to do
+with which TypeScript features you use, so it happens whether or not the type
+stripping below affects you.
+
+Either use extensioned specifiers throughout, or pass a loader:
+
+```bash
+npx md-verified docs/thing.md --import tsx
+```
+
+`--import` re-runs the command under `node --import <loader>`, so the loader is
+installed before your glue is resolved. It is repeatable, and ignored under Bun,
+which needs no loader. The published bin uses a `node` shebang, so `npx` works
+out of the box; to run under Bun instead use `bunx --bun md-verified`.
+
+### Type stripping
 
 Node strips types rather than transforming them, so a few TypeScript features
 do not survive **in glue, or in anything glue imports as `.ts`**:
@@ -536,18 +567,15 @@ enum, namespace, parameter properties (constructor(readonly x: string)), decorat
 ```
 
 Types, interfaces, generics, `as const`, `satisfies` and type-only exports are
-all fine. In practice glue is plain functions, so this rarely matters — the
-case that does is glue importing an `enum` from your application code.
-
-The fix is one line:
+all fine. In practice glue is plain functions, so this rarely matters — the case
+that does is glue importing an `enum` from your application code:
 
 ```bash
 NODE_OPTIONS=--experimental-transform-types npx md-verified docs/thing.md
 ```
 
-The published bin uses a `node` shebang so `npx` works out of the box. To run it
-under Bun instead — which has none of the above limits — use `bunx --bun
-md-verified` or `bun node_modules/md-verified/dist/check.js`.
+That flag changes how types are compiled. It does **not** affect module
+resolution, so it will not fix the error above.
 
 Deno is untested. It should work in principle, via `node:` compatibility and an
 `npm:` specifier, but nothing here verifies that.
@@ -621,8 +649,9 @@ Glue can import application code however the rest of your project does —
 - Anchor ids must be unique per document. The CLI clears the registry between
   files; in-process, use `loadDocument()`.
 - Node's type stripping cannot handle `enum`, `namespace`, parameter properties
-  or decorators in glue. See [Runtimes](#runtimes); `NODE_OPTIONS=--experimental-transform-types`
-  lifts the restriction.
+  or decorators in glue, and rejects relative imports with no file extension.
+  See [Runtimes](#runtimes): `--import <loader>` covers resolution,
+  `NODE_OPTIONS=--experimental-transform-types` covers the type features.
 - Deno is untested.
 - Symbol lookup reads files rather than importing them, so nothing in the
   checked project is executed and type-only exports are visible. The trade-off
