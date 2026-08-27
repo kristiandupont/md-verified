@@ -6,7 +6,9 @@
  *   bun run check.ts examples/*.md --write
  *   bun run check.ts examples/spec.md --json
  */
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { glob, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 
@@ -30,6 +32,8 @@ interface Flags extends RunOptions {
   /** `true` stamps every review; an array stamps only those ids. */
   stamp: boolean | string[];
   force: boolean;
+  /** Node loaders to re-exec under, e.g. `tsx`. */
+  import: string[];
   covering?: string;
   json: boolean;
   verbose: boolean;
@@ -57,6 +61,9 @@ OPTIONS
                     document -- which attests to sections you may not have read,
                     so name the one you did. Deliberately separate from --write.
   --force           Allow --stamp on a run that has failing anchors.
+  --import <loader> Re-run under \`node --import <loader>\`, so glue that uses
+                    extensionless relative imports resolves. Repeatable.
+                    Ignored under Bun, which needs no loader.
   --covering <path> Instead of checking, list the reviews that cover <path>.
                     Answers "which documents describe this code?" without
                     putting a marker in the code itself. Searches the documents
@@ -83,6 +90,7 @@ function parseArgs(argv: string[]): Flags {
     reset: false,
     stamp: false,
     force: false,
+    import: [],
     json: false,
     verbose: false,
     help: false,
@@ -125,6 +133,7 @@ function parseArgs(argv: string[]): Flags {
         break;
       }
       case '--force': flags.force = true; break;
+      case '--import': flags.import.push(argv[++i]!); break;
       case '--covering': flags.covering = argv[++i]; break;
       case '--no-links': flags.links = false; break;
       case '--no-reviews': flags.reviews = false; break;
@@ -158,6 +167,20 @@ async function main(): Promise<number> {
   if (flags.help) {
     console.log(USAGE);
     return 0;
+  }
+
+  // A loader has to be installed before the glue's import graph is resolved,
+  // and that resolution happens inside this process -- too late to arrange it
+  // from here. Re-exec instead, so the user drives an entry point we control
+  // rather than invoking node_modules/md-verified/dist/check.js by hand.
+  if (flags.import.length && !process.env.MD_VERIFIED_LOADED) {
+    if (process.versions.bun) {
+      console.error(
+        'md-verified: --import ignored; Bun needs no loader for TypeScript or extensionless imports.',
+      );
+    } else {
+      return reexec(flags.import);
+    }
   }
   // JSON goes to stdout alone, so it stays pipeable.
   if (flags.json) setColor(false);
@@ -230,6 +253,40 @@ async function main(): Promise<number> {
   }
 
   return failures === 0 ? 0 : 1;
+}
+
+/**
+ * Restart under `node --import <loader>`, forwarding every other argument.
+ *
+ * `MD_VERIFIED_LOADED` guards the child: a loader that installs but does not
+ * fix resolution would otherwise re-exec forever.
+ */
+function reexec(loaders: string[]): number {
+  const self = fileURLToPath(import.meta.url);
+  const args = [...loaders.flatMap((l) => ['--import', l]), self, ...withoutImport(process.argv.slice(2))];
+
+  const result = spawnSync(process.execPath, args, {
+    stdio: 'inherit',
+    env: { ...process.env, MD_VERIFIED_LOADED: '1' },
+  });
+
+  if (result.error) {
+    throw new Error(`could not re-run with --import: ${result.error.message}`);
+  }
+  // A child killed by a signal has no status; report that as a failure.
+  return result.status ?? 1;
+}
+
+/** The child receives the loader through `node`, so drop our own flag. */
+function withoutImport(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === '--import') { i++; continue; }
+    if (arg.startsWith('--import=')) continue;
+    out.push(arg);
+  }
+  return out;
 }
 
 /** Check one document. Throws only when the document cannot be run at all. */
