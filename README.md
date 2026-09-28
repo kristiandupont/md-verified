@@ -151,6 +151,13 @@ Runs on **Bun** and **Node 24+**. The package itself uses only `node:`
 builtins, so there is one code path rather than a compatibility layer. See
 [Runtimes](#runtimes) for the one TypeScript caveat under Node.
 
+md-verified reads your code with its own copy of TypeScript 6.0, installed
+under the name `md-verified-typescript`. It is not named `typescript`, so adding
+md-verified does not change which `typescript` your project or its other
+dependencies resolve. Your project can use TypeScript 5, 6 or 7. TypeScript 7
+does not include the JavaScript compiler API that md-verified uses, which is why
+it does not use your project's own copy.
+
 Or from a clone:
 
 ```
@@ -274,7 +281,7 @@ an id instead, as a bold word followed by a colon:
 > 🛠️ **Verified Checklist:** `releaseRules`
 
 - [x] **changelog**: every user-facing change has an entry
-- [x] **peerRange**: the supported TypeScript range is documented
+- [x] **lockfile**: the lockfile is committed
 ```
 
 and bind one handler per id:
@@ -282,7 +289,7 @@ and bind one handler per id:
 ```ts
 verify.list.keyed("releaseRules", {
   changelog: (item) => { /* ... */ },
-  peerRange: (item) => { /* ... */ },
+  lockfile: (item) => { /* ... */ },
 });
 ```
 
@@ -395,12 +402,34 @@ or object type. Both take a path relative to the working directory, or a `URL` �
 use the `URL` form in glue, so the answer does not depend on where the command
 was run from.
 
-Both read the **declaration only**. There is no type checker here, so a union
-assembled by reference (`keyof typeof X`), an interface with an `extends`
-clause, or a union that is not all string literals is **refused with a message
-saying which**, rather than answered with a partial list. A silently short list
-would make `covers()` pass against nothing, which is the failure the function
-exists to remove.
+A union written out as literals, and an interface or object type that lists
+its own members, are read straight from the declaration and keep its order.
+Everything else goes to the TypeScript type checker, using the compiler options
+of the nearest `tsconfig.json` above the file:
+
+```ts
+export const Status = { Active: "active", Paused: "paused" } as const;
+export type Status = (typeof Status)[keyof typeof Status]; // active, paused
+
+const ROLES = ["viewer", "admin"] as const;
+export type Role = (typeof ROLES)[number]; // admin, viewer
+export type Editable = Exclude<Role, "viewer">; // admin
+```
+
+Mapped and conditional types, interfaces that `extend`, intersections and
+re-exports are resolved the same way. The checker's answers are sorted, because
+the order it holds a union in is not the order anyone wrote.
+
+A type whose members are not a finite set of names is **refused with a message
+saying why**: a union that includes a non-literal such as `string`, a template
+literal type, a generic, a type with an index signature, or a type that
+resolves to `any` because an import in it could not be resolved. A silently
+short list would make `covers()` pass against nothing, which is the failure the
+function exists to remove.
+
+The first call that needs the checker builds a program, which costs a second or
+less; later calls reuse it. Only the files you ask about are its roots, so the
+cost follows their imports, not the size of the repository.
 
 For the lower-level questions — does this module export this name, and what is
 its declaration text — `exportedNames()` and `exportedSymbol()` return that.

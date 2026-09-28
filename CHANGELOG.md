@@ -15,6 +15,24 @@ While the major version is `0`, a minor bump may contain breaking changes.
   `[x] **alpha**: text`; it is now `**alpha**: text`. Items that began with
   plain text were already correct. Glue that stripped the marker itself should
   stop doing so.
+- md-verified now depends on TypeScript 6.0 under the alias
+  `md-verified-typescript` (`npm:typescript@~6.0.3`) instead of on
+  `typescript@^5.9.2`. A dependency named `typescript` took part in the
+  project's own resolution: adding md-verified to one workspace package moved
+  another package's `typescript` peer to a different version. The alias does
+  not. It is not a peer dependency because TypeScript 7 does not include the
+  JavaScript compiler API, so a project on TypeScript 7 could not supply one.
+- `typeMembers()` and `propertiesOf()` resolve through the TypeScript type
+  checker when the declaration does not list the members itself. Forms they
+  refused before now return answers: `(typeof X)[keyof typeof X]`,
+  `(typeof ARR)[number]`, `keyof typeof X`, `Exclude<…>`/`Extract<…>`, mapped
+  and conditional types, interfaces with `extends`, intersections, and names
+  that are only re-exported. Answers from the checker are sorted; answers read
+  from the declaration keep its order, as before. Types that are not a finite
+  set of names are still refused, with the reason: non-literal union members,
+  template literal types, generics, index signatures, and types that resolve to
+  `any`. The checker uses the compiler options of the nearest `tsconfig.json`
+  above the file.
 
 ### Added
 

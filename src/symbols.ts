@@ -15,7 +15,9 @@
  */
 import { fileURLToPath } from 'node:url';
 
-import ts from 'typescript';
+import ts from 'md-verified-typescript';
+
+import { checkedPropertiesOf, checkedTypeMembers, clearCheckerCache } from './checker.ts';
 
 export interface SymbolInfo {
   name: string;
@@ -61,6 +63,7 @@ export function exportedSymbol(path: string, name: string): SymbolInfo | Error |
 export function clearSymbolCache(): void {
   fileCache.clear();
   nodeCache.clear();
+  clearCheckerCache();
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +71,7 @@ export function clearSymbolCache(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * The string-literal members of a union type, in declaration order.
+ * The string-literal members of a union type.
  *
  * ```ts
  * // export type OutcomeKind = 'success' | 'note-error';
@@ -86,41 +89,30 @@ export function clearSymbolCache(): void {
  * which of the several possible reasons applied, because a member list that is
  * silently empty is worse than no member list at all.
  *
- * Reads the declaration only -- there is no type checker here, so a union built
- * by reference (`keyof typeof X`, or an alias of another alias) is refused
- * rather than guessed at.
+ * A union written out as literals, and an enum, are read from the declaration,
+ * in declaration order. Anything else -- `(typeof X)[keyof typeof X]`,
+ * `(typeof ARR)[number]`, `Exclude<...>`, mapped and conditional types, a
+ * re-export -- is resolved by the type checker and returned sorted. A result
+ * that is not a finite set of string literals is refused.
  */
 export function typeMembers(module: string | URL, name: string): string[] {
-  const { path, node } = declaration(module, name);
+  const { path, shown, node } = declaration(module, name);
 
-  if (ts.isEnumDeclaration(node)) {
+  if (node && ts.isEnumDeclaration(node)) {
     return node.members.map((m) => (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name)
       ? m.name.text
       : m.name.getText()));
   }
 
-  if (!ts.isTypeAliasDeclaration(node)) {
-    throw new Error(
-      `${name} in ${path} is ${kindName(node)}, not a type alias; ` +
-        `use propertiesOf() for an interface or object type`,
-    );
-  }
-
-  const parts = ts.isUnionTypeNode(node.type) ? [...node.type.types] : [node.type];
-  const members: string[] = [];
-
-  for (const part of parts) {
-    if (ts.isLiteralTypeNode(part) && ts.isStringLiteral(part.literal)) {
-      members.push(part.literal.text);
-      continue;
+  if (node && ts.isTypeAliasDeclaration(node) && !node.typeParameters) {
+    const parts = ts.isUnionTypeNode(node.type) ? [...node.type.types] : [node.type];
+    const literal = (part: ts.TypeNode) => ts.isLiteralTypeNode(part) && ts.isStringLiteral(part.literal);
+    if (parts.every(literal)) {
+      return parts.map((part) => ((part as ts.LiteralTypeNode).literal as ts.StringLiteral).text);
     }
-    throw new Error(
-      `${name} in ${path} is not a union of string literals ` +
-        `(\`${part.getText()}\` is not one), so its members cannot be read from the declaration`,
-    );
   }
 
-  return members;
+  return checkedTypeMembers(path, shown, name);
 }
 
 /**
@@ -131,34 +123,27 @@ export function typeMembers(module: string | URL, name: string): string[] {
  * // ['commit', 'revert']
  * ```
  *
- * Throws, for the same reason `typeMembers` does. Inherited members are not
- * included: `extends` is a reference this cannot follow without a type checker,
- * and silently returning only half an interface would be worse than refusing.
+ * Throws, for the same reason `typeMembers` does. An interface without
+ * `extends`, an object type literal and a class are read from the declaration,
+ * in declaration order. Anything else -- inherited members, intersections,
+ * mapped types, a re-export -- is resolved by the type checker and returned
+ * sorted. A type with an index signature is refused, since its property names
+ * are not a finite set.
  */
 export function propertiesOf(module: string | URL, name: string): string[] {
-  const { path, node } = declaration(module, name);
+  const { path, shown, node } = declaration(module, name);
 
-  const members = ts.isInterfaceDeclaration(node)
-    ? node.members
-    : ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)
-      ? node.type.members
-      : ts.isClassDeclaration(node)
-        ? node.members
-        : null;
+  const members = !node
+    ? null
+    : ts.isInterfaceDeclaration(node) && !node.heritageClauses?.length && !node.typeParameters
+      ? node.members
+      : ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type) && !node.typeParameters
+        ? node.type.members
+        : ts.isClassDeclaration(node)
+          ? node.members
+          : null;
 
-  if (!members) {
-    throw new Error(
-      `${name} in ${path} is ${kindName(node)}, which declares no properties; ` +
-        `use typeMembers() for a string-literal union`,
-    );
-  }
-
-  if (ts.isInterfaceDeclaration(node) && node.heritageClauses?.length) {
-    throw new Error(
-      `${name} in ${path} extends another type, whose members cannot be read from ` +
-        `this declaration alone; list the base type separately`,
-    );
-  }
+  if (!members) return checkedPropertiesOf(path, shown, name);
 
   return members
     .map((m) => m.name)
@@ -167,7 +152,9 @@ export function propertiesOf(module: string | URL, name: string): string[] {
 }
 
 /**
- * The declaration node for an exported name, or a thrown explanation.
+ * Where `module` is, and the declaration of `name` in it when the file
+ * declares that export itself. `node` is absent for a name the file does not
+ * declare, which may still be a re-export; the checker decides.
  *
  * A `URL` resolves against itself, so glue passes
  * `new URL('../src/x.ts', import.meta.url)` and gets the same answer wherever
@@ -175,7 +162,10 @@ export function propertiesOf(module: string | URL, name: string): string[] {
  * directory, which is what a one-off script wants and what a glue file
  * generally does not.
  */
-function declaration(module: string | URL, name: string): { path: string; node: ts.Node } {
+function declaration(
+  module: string | URL,
+  name: string,
+): { path: string; shown: string; node: ts.Node | undefined } {
   const path =
     module instanceof URL || String(module).startsWith('file://')
       ? fileURLToPath(module)
@@ -187,23 +177,7 @@ function declaration(module: string | URL, name: string): { path: string; node: 
   if (symbols instanceof Error) {
     throw new Error(`${shown} could not be read: ${symbols.message}`);
   }
-  if (!symbols.has(name)) {
-    const known = [...symbols.keys()].sort().join(', ');
-    throw new Error(`${shown} exports no \`${name}\`${known ? ` (it exports ${known})` : ''}`);
-  }
-
-  const node = nodeCache.get(path)?.get(name);
-  if (!node) throw new Error(`${shown} exports \`${name}\`, but its declaration could not be read`);
-  return { path: shown, node };
-}
-
-function kindName(node: ts.Node): string {
-  if (ts.isInterfaceDeclaration(node)) return 'an interface';
-  if (ts.isTypeAliasDeclaration(node)) return 'a type alias';
-  if (ts.isClassDeclaration(node)) return 'a class';
-  if (ts.isEnumDeclaration(node)) return 'an enum';
-  if (ts.isFunctionDeclaration(node)) return 'a function';
-  return 'a declaration';
+  return { path, shown, node: nodeCache.get(path)?.get(name) };
 }
 
 // ---------------------------------------------------------------------------
