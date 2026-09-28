@@ -14,7 +14,7 @@ import { findGlueHint, parseMarkdown } from './parser.ts';
 import { checkReferences } from './references.ts';
 import { checkReviews } from './reviews.ts';
 import { assertionCount } from './assertions.ts';
-import { getRegistrations, verify, type VerifyContext } from './framework.ts';
+import { getRegistrations, verify, type ItemHandler, type VerifyContext } from './framework.ts';
 import type {
   Anchor,
   AnchorKind,
@@ -249,6 +249,11 @@ export function planCases(anchor: Anchor, file: string): Plan {
       continue;
     }
 
+    if (registration.keys) {
+      cases.push(...keyedCases(anchor.data as ParsedList, registration.keys, anchor, ctx));
+      continue;
+    }
+
     for (const kase of buildCases(anchor, registration.mode)) {
       cases.push({
         name: kase.name,
@@ -266,6 +271,64 @@ export function planCases(anchor: Anchor, file: string): Plan {
 // ---------------------------------------------------------------------------
 // case construction
 // ---------------------------------------------------------------------------
+
+/**
+ * One case per top-level item, named by its id, plus one case listing the
+ * handlers that have no item -- added only when there are some, so a list
+ * that matches its handlers shows exactly one case per item.
+ *
+ * Every mismatch fails a case rather than being passed over: an item nobody
+ * checks and a handler that checks nothing both look green otherwise.
+ */
+function keyedCases(
+  list: ParsedList,
+  handlers: Readonly<Record<string, ItemHandler>>,
+  anchor: Anchor,
+  ctx: VerifyContext,
+): PlannedCase[] {
+  const cases: PlannedCase[] = [];
+  const seen = new Set<string>();
+
+  for (const item of list.items) {
+    const repeated = item.id !== null && seen.has(item.id);
+    if (item.id !== null) seen.add(item.id);
+
+    cases.push({
+      name: item.id ?? `item ${item.index + 1}`,
+      line: item.line,
+      run: async () => {
+        if (item.id === null) {
+          throw new Error(`item has no id; start it with **id**: to bind it to a handler`);
+        }
+        if (repeated) {
+          throw new Error(`\`${item.id}\` is used by an earlier item in this list; ids must be unique`);
+        }
+        const handler = Object.hasOwn(handlers, item.id) ? handlers[item.id] : undefined;
+        if (!handler) {
+          throw new Error(
+            `no handler for \`${item.id}\`; add it to verify.list.keyed('${anchor.id}', { ... })`,
+          );
+        }
+        await handler(item, ctx);
+      },
+    });
+  }
+
+  const orphans = Object.keys(handlers).filter((key) => !seen.has(key));
+  if (orphans.length) {
+    cases.push({
+      name: 'handlers',
+      line: anchor.line,
+      run: async () => {
+        throw new Error(
+          orphans.map((key) => `handler \`${key}\` has no item in this list`).join('; '),
+        );
+      },
+    });
+  }
+
+  return cases;
+}
 
 interface Case {
   name: string;

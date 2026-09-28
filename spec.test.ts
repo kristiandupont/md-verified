@@ -40,7 +40,7 @@ import {
   slugify,
 } from './src/index.ts';
 import { rewriteFromRun } from './src/report.ts';
-import type { MermaidGraph, ParsedList, ParsedTable } from './src/index.ts';
+import type { ListItem, MermaidGraph, ParsedList, ParsedTable } from './src/index.ts';
 
 const SPEC = 'examples/spec.md';
 const BROKEN = 'examples/broken.md';
@@ -369,6 +369,107 @@ describe('lists', () => {
     expect(list.flat.map((i) => i.text)).toEqual(['one', 'two', 'nested']);
     expect(list.flat[2]!.depth).toBe(1);
     expect(list.flat[2]!.checked).toBeNull();
+  });
+
+  const items = (md: string) =>
+    (parseMarkdown(`> 🛠️ **Verified Rules:** \`r\`\n\n${md}`, 't.md').anchors[0]!.data as ParsedList)
+      .items;
+
+  // The marker was only removed when the item began with plain text, so an
+  // item starting with markup -- as every keyed item does -- kept `[x] `.
+  test('drops the task marker when the item starts with markup', () => {
+    const [a, b] = items('- [x] **alpha**: first\n- [ ] `code` second\n');
+    expect(a!.text).toBe('**alpha**: first');
+    expect(a!.checked).toBe(true);
+    expect(b!.text).toBe('`code` second');
+  });
+
+  test('reads an id from a leading **id**:', () => {
+    const got = items(
+      [
+        '- [x] **alpha**: checked',
+        '- **beta-2.x**: plain bullet',
+        '- **Note:** colon inside the bold',
+        '- **two words**: not one word',
+        '- **gamma** no colon',
+        '- text first **delta**: not leading',
+        '',
+      ].join('\n'),
+    ).map((i) => i.id);
+    expect(got).toEqual(['alpha', 'beta-2.x', null, null, null, null]);
+  });
+});
+
+describe('keyed lists', () => {
+  const src = (md: string) => `> 🛠️ **Verified Rules:** \`r\`\n\n${md}`;
+  const runKeyed = async (md: string, handlers: Record<string, (item: ListItem) => void>) => {
+    verify.reset();
+    verify.list.keyed('r', handlers);
+    return (await runParsed(parseMarkdown(src(md), 't.md'), { links: false })).anchors[0]!;
+  };
+
+  test('runs the handler for each item, named by id', async () => {
+    const seen: string[] = [];
+    const a = await runKeyed('- [x] **alpha**: A\n  - detail\n- [ ] **beta**: B\n', {
+      alpha: (item) => { seen.push(`alpha:${item.checked}:${item.children.length}`); },
+      beta: (item) => { seen.push(`beta:${item.checked}`); },
+    });
+
+    expect(a.status).toBe('passed');
+    expect(a.cases.map((x) => x.name)).toEqual(['alpha', 'beta']);
+    // Nested items are the parent's, not cases of their own.
+    expect(seen).toEqual(['alpha:true:1', 'beta:false']);
+  });
+
+  test('fails an item with no id', async () => {
+    const a = await runKeyed('- **alpha**: A\n- no id here\n', { alpha: () => {} });
+    expect(a.cases[1]!.name).toBe('item 2');
+    expect(a.cases[1]!.error).toMatch(/item has no id/);
+  });
+
+  test('fails an id with no handler', async () => {
+    const a = await runKeyed('- **alpha**: A\n- **beta**: B\n', { alpha: () => {} });
+    expect(a.cases[1]!.error).toMatch(/no handler for `beta`/);
+  });
+
+  test('fails a handler with no item, in one extra case', async () => {
+    const a = await runKeyed('- **alpha**: A\n', { alpha: () => {}, beta: () => {}, gamma: () => {} });
+    expect(a.cases.map((x) => x.name)).toEqual(['alpha', 'handlers']);
+    expect(a.cases[1]!.error).toBe('handler `beta` has no item in this list; handler `gamma` has no item in this list');
+  });
+
+  test('fails a repeated id', async () => {
+    const a = await runKeyed('- **alpha**: A\n- **alpha**: again\n', { alpha: () => {} });
+    expect(a.cases[0]!.status).toBe('passed');
+    expect(a.cases[1]!.error).toMatch(/`alpha` is used by an earlier item/);
+  });
+
+  test('does not treat inherited properties as handlers', async () => {
+    const a = await runKeyed('- **toString**: A\n', {});
+    expect(a.cases[0]!.error).toMatch(/no handler for `toString`/);
+  });
+
+  test('rejects a key that can never match an item', () => {
+    verify.reset();
+    expect(() => verify.list.keyed('r', { 'two words': () => {} })).toThrow(/can never match an item/);
+  });
+
+  test('cannot be combined with verify.list on one anchor', () => {
+    verify.reset();
+    verify.list('r', () => {});
+    expect(() => verify.list.keyed('r', {})).toThrow(
+      /already has a list.each handler, so it cannot also have a list.keyed one/,
+    );
+  });
+
+  test('can be combined with verify.list.all', async () => {
+    verify.reset();
+    let whole = 0;
+    verify.list.keyed('r', { alpha: () => {} });
+    verify.list.all('r', () => { whole++; });
+    const run = await runParsed(parseMarkdown(src('- **alpha**: A\n'), 't.md'), { links: false });
+    expect(run.anchors[0]!.cases.map((x) => x.name)).toEqual(['alpha', 'whole list']);
+    expect(whole).toBe(1);
   });
 });
 

@@ -11,7 +11,7 @@ export type {
   ListHandler,
 } from './framework.ts';
 
-export { parseMarkdown, parseSchema, parseCovers, findGlueHint, LABEL_KINDS } from './parser.ts';
+export { parseMarkdown, parseSchema, parseCovers, findGlueHint, LABEL_KINDS, ITEM_ID_RE } from './parser.ts';
 export { covers } from './covers.ts';
 export { checkReviews, digestOf } from './reviews.ts';
 export type { ReviewOptions } from './reviews.ts';

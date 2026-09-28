@@ -10,6 +10,7 @@
  * contract -- any assertion library works, including none.
  */
 import { registerType, type Coercer } from './coerce.ts';
+import { ITEM_ID_RE } from './parser.ts';
 import type {
   AnchorKind,
   AnchorMeta,
@@ -51,6 +52,11 @@ export interface Registration {
   kind: AnchorKind;
   mode: HandlerMode;
   fn: (payload: any, ctx: VerifyContext) => unknown;
+  /**
+   * Set by `verify.list.keyed`: one handler per item id. The runner builds one
+   * case per top-level item from it, and `fn` is unused.
+   */
+  keys?: Readonly<Record<string, ItemHandler>>;
 }
 
 /**
@@ -61,7 +67,13 @@ export interface Registration {
  */
 const registry = new Map<string, Registration>();
 
-function register(id: string, kind: AnchorKind, mode: HandlerMode, fn: Function): void {
+function register(
+  id: string,
+  kind: AnchorKind,
+  mode: HandlerMode,
+  fn: Function,
+  keys?: Registration['keys'],
+): void {
   if (typeof id !== 'string' || !id.trim()) {
     throw new TypeError('verify: id must be a non-empty string');
   }
@@ -77,14 +89,19 @@ function register(id: string, kind: AnchorKind, mode: HandlerMode, fn: Function)
   }
 
   const key = `${id}:${mode}`;
-  if (registry.has(key)) {
+  const existing = registry.get(key);
+  if (existing) {
+    // `list` and `list.keyed` both claim the per-item cases, so say which.
+    const name = (r: { keys?: unknown }) => (r.keys ? `${kind}.keyed` : `${kind}.${mode}`);
     throw new Error(
-      `verify: \`${id}\` already has a ${kind}.${mode} handler.\n` +
+      `verify: \`${id}\` already has a ${name(existing)} handler` +
+        (name(existing) === name({ keys }) ? '' : `, so it cannot also have a ${name({ keys })} one`) +
+        `.\n` +
         `Anchor ids are unique per *document*, not per project, so two documents may both use \`${id}\`. ` +
         `If that is what happened, load each document with loadDocument() rather than importing their glue files into one process.`,
     );
   }
-  registry.set(key, { id, kind, mode, fn: fn as Registration['fn'] });
+  registry.set(key, { id, kind, mode, fn: fn as Registration['fn'], ...(keys ? { keys } : {}) });
 }
 
 /** Register a table handler, called once per data row. */
@@ -101,6 +118,31 @@ mermaid.edges = (id: string, fn: EdgeHandler): void => register(id, 'mermaid', '
 const list = (id: string, fn: ItemHandler): void => register(id, 'list', 'each', fn);
 /** Register a list handler, called once with the whole list. */
 list.all = (id: string, fn: ListHandler): void => register(id, 'list', 'all', fn);
+/**
+ * Register one handler per item, keyed by the item's `**id**:`.
+ *
+ * Top-level items only; nested items reach their parent's handler through
+ * `item.children`. The list and the handlers must match in both directions:
+ * an item with no id, a repeated id, an id with no handler and a handler with
+ * no item each fail.
+ */
+list.keyed = (id: string, handlers: Record<string, ItemHandler>): void => {
+  if (!handlers || typeof handlers !== 'object') {
+    throw new TypeError(`verify: list.keyed(\`${id}\`) takes an object of handlers keyed by item id`);
+  }
+  for (const [key, fn] of Object.entries(handlers)) {
+    if (!ITEM_ID_RE.test(key)) {
+      throw new TypeError(
+        `verify: list.keyed(\`${id}\`): \`${key}\` can never match an item; ` +
+          `an id is one word of letters, digits, _, . and -`,
+      );
+    }
+    if (typeof fn !== 'function') {
+      throw new TypeError(`verify: list.keyed(\`${id}\`): the handler for \`${key}\` must be a function`);
+    }
+  }
+  register(id, 'list', 'each', () => {}, Object.freeze({ ...handlers }));
+};
 
 export const verify = {
   table,

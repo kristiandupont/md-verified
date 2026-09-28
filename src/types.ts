@@ -96,8 +96,16 @@ export interface SchemaField {
 
 /** A bullet or ordered list item. */
 export interface ListItem {
-  /** Item text with Markdown inline syntax preserved. */
+  /**
+   * Item text with Markdown inline syntax preserved, after the `[x]` / `[ ]`
+   * marker. An `**id**: ` prefix stays in the text.
+   */
   text: string;
+  /**
+   * The item's key, from a leading `**id**:` -- the colon outside the bold, the
+   * id a single word of letters, digits, `_`, `.` and `-`. `null` otherwise.
+   */
+  id: string | null;
   /** `true` / `false` for `- [x]` / `- [ ]` items, `null` otherwise. */
   checked: boolean | null;
   /** Nesting depth, 0 at the top level. */

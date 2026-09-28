@@ -8,6 +8,27 @@ While the major version is `0`, a minor bump may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `ListItem.text` no longer starts with the task marker when the
+  item begins with inline markup. `- [x] **alpha**: text` gave `text` as
+  `[x] **alpha**: text`; it is now `**alpha**: text`. Items that began with
+  plain text were already correct. Glue that stripped the marker itself should
+  stop doing so.
+
+### Added
+
+- `ListItem.id`: the item's key when it starts `**id**:` (the colon after the
+  bold, the id one word of letters, digits, `_`, `.` and `-`), otherwise
+  `null`. `ITEM_ID_RE` is exported.
+- `verify.list.keyed(id, { key: handler, … })`: one handler per top-level item,
+  keyed by id, so rewording an item does not break its binding. Cases are named
+  by id. An item with no id, a repeated id, an id with no handler and a handler
+  with no item each fail. It replaces `verify.list` on an anchor and can be
+  combined with `verify.list.all`.
+- `stampMarkdown()` and `stampFromRun()`, exported: the stamp-only rewrite that
+  `--stamp` uses when it runs without `--write`.
+
 ### Fixed
 
 - `--stamp` without `--write` rewrote every anchor's glyph from the run, so
@@ -19,11 +40,6 @@ While the major version is `0`, a minor bump may contain breaking changes.
 - `--verbose` printed the second and later lines of a multi-line failure
   message twice, because it took every stack line after the first as a frame.
   The stack's header is now removed by matching the message.
-
-### Added
-
-- `stampMarkdown()` and `stampFromRun()`, exported: the stamp-only rewrite that
-  `--stamp` uses when it runs without `--write`.
 
 ## [0.2.0] - 2026-08-27
 

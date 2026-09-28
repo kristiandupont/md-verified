@@ -317,6 +317,7 @@ function extractList(source: string, node: any): ParsedList {
 
       const item: ListItem = {
         text,
+        id: itemId(body[0]),
         checked: typeof li.checked === 'boolean' ? li.checked : null,
         depth,
         index,
@@ -332,6 +333,26 @@ function extractList(source: string, node: any): ParsedList {
   flat.sort((a, b) => a.line - b.line);
 
   return { ordered: Boolean(node.ordered), items, flat };
+}
+
+/** What a list item's key may look like: one word, no spaces. */
+export const ITEM_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+
+/**
+ * The id of an item whose first paragraph starts `**id**:`, or `null`.
+ *
+ * The colon must follow the bold. `**Note:** text` is ordinary emphasis, and
+ * so is a bold phrase with spaces in it; neither is a key.
+ */
+function itemId(first: any): string | null {
+  if (first?.type !== 'paragraph') return null;
+  const [strong, after] = first.children ?? [];
+
+  if (strong?.type !== 'strong' || strong.children?.length !== 1) return null;
+  const label = strong.children[0];
+  if (label.type !== 'text' || !ITEM_ID_RE.test(label.value)) return null;
+
+  return after?.type === 'text' && after.value.startsWith(':') ? label.value : null;
 }
 
 /** `[itemsTotal: Currency, tax: Percentage]` -> fields. */
