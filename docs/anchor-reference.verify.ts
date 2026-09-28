@@ -7,10 +7,10 @@
  * half is the one that catches a contributor adding a label or a type and
  * forgetting the page exists.
  */
-import { assert, covers, verify } from '../src/index.ts';
+import { assert, covers, equals, verify } from '../src/index.ts';
 import { coerce, hasType, knownTypes } from '../src/coerce.ts';
-import { LABEL_KINDS } from '../src/parser.ts';
-import { STATUS_GLYPH, type Status } from '../src/types.ts';
+import { LABEL_KINDS, parseMarkdown } from '../src/parser.ts';
+import { STATUS_GLYPH, type ParsedList, type Status } from '../src/types.ts';
 
 /** Strip the backticks a Markdown table cell uses for inline code. */
 const bare = (cell: string): string => cell.replace(/`/g, '').trim();
@@ -96,6 +96,21 @@ verify.table.all('schemaTypes', (table) => {
     missing: (t) => `\`${t}\` is a registered type but this page does not list it`,
     extra: (t) => `\`${t}\` is listed here but is not registered`,
   });
+});
+
+// ---------------------------------------------------------------------------
+// List item ids
+// ---------------------------------------------------------------------------
+
+verify.table('itemIds', (row) => {
+  const item = bare(row['Item'] as string);
+  const expected = bare(row['Id'] as string);
+
+  const parsed = parseMarkdown(`> 🛠️ **Verified Rules:** \`x\`\n\n${item}\n`, 'example.md');
+  const list = parsed.anchors[0]?.data as ParsedList | undefined;
+  assert(list?.items.length === 1, `${JSON.stringify(item)} does not parse as one list item`);
+
+  equals(list.items[0]!.id ?? '—', expected, `id of ${JSON.stringify(item)}`);
 });
 
 // ---------------------------------------------------------------------------

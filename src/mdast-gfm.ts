@@ -95,28 +95,38 @@ const exitCheck: Handle = function (this: CompileContext, token) {
   node.checked = token.type === 'taskListCheckValueChecked';
 };
 
-/** Strip the space that followed the `[x]` marker from the item's text. */
+/**
+ * Strip the space that followed the `[x]` marker from the item's text, and
+ * start the paragraph after the marker.
+ *
+ * The paragraph's position is what the list extractor slices the item's text
+ * by, so it has to move past the marker whatever the first inline node is. An
+ * item starting with `**id**:` begins with a `strong`, not a `text`.
+ */
 const exitParagraphWithTaskListItem: Handle = function (this: CompileContext, token) {
   const parent: any = this.stack[this.stack.length - 2];
+  const node: any = this.stack[this.stack.length - 1];
 
-  if (parent && parent.type === 'listItem' && typeof parent.checked === 'boolean') {
-    const node: any = this.stack[this.stack.length - 1];
+  if (
+    parent &&
+    parent.type === 'listItem' &&
+    typeof parent.checked === 'boolean' &&
+    parent.children.find((c: any) => c.type === 'paragraph') === node
+  ) {
     const head = node.children[0];
 
     if (head && head.type === 'text') {
-      const firstParagraph = parent.children.find((c: any) => c.type === 'paragraph');
-
-      if (firstParagraph === node) {
-        head.value = head.value.slice(1);
-        if (head.value.length === 0) {
-          node.children.shift();
-        } else if (node.position && head.position && typeof head.position.start.offset === 'number') {
-          head.position.start.column++;
-          head.position.start.offset++;
-          node.position.start = { ...head.position.start };
-        }
+      head.value = head.value.slice(1);
+      if (head.value.length === 0) {
+        node.children.shift();
+      } else if (head.position && typeof head.position.start.offset === 'number') {
+        head.position.start.column++;
+        head.position.start.offset++;
       }
     }
+
+    const first = node.children[0];
+    if (node.position && first?.position) node.position.start = { ...first.position.start };
   }
 
   this.exit(token);

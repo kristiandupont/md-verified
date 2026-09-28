@@ -69,6 +69,28 @@ parser actually accepts.
 A trailing `?` on a field name (`discount?: Currency`) lets a blank cell
 through as `null`. `verify.type()` adds your own.
 
+## List item ids
+
+A list item that starts with a bold word and a colon, `**id**:`, has that word
+as its `id`. `verify.list.keyed()` binds one handler per id, so rewording an
+item's text does not break its check. The colon goes after the bold. An id is
+one word of letters, digits, `_`, `.` and `-`, so ordinary emphasis at the
+start of an item is not mistaken for one. Each example below is parsed by the
+check for this table.
+
+> ✅ **Verified Data:** `itemIds`
+
+| Item                                  | Id         |
+| ------------------------------------- | ---------- |
+| `- [x] **refunds**: are manual`       | `refunds`  |
+| `- **retry-limit.v2**: three attempts` | `retry-limit.v2` |
+| `- **Note:** colon inside the bold`   | —          |
+| `- **two words**: a phrase`           | —          |
+| `- plain text **late**: not leading`  | —          |
+
+An item's `text` is what follows the `[x]` or `[ ]` marker, and it keeps the
+`**id**:` prefix.
+
 ## Status glyphs
 
 The glyph on an anchor is written by the runner and read by everyone else. It

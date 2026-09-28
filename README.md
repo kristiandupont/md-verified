@@ -253,6 +253,7 @@ none.
 | `verify.mermaid.edges(id, fn)` | one `MermaidEdge` per edge         |
 | `verify.list(id, fn)`          | one `ListItem` per item            |
 | `verify.list.all(id, fn)`      | the whole `ParsedList`             |
+| `verify.list.keyed(id, fns)`   | one top-level `ListItem` per `**id**:` |
 | `verify.type(name, fn)`        | — registers a `Schema:` value type |
 
 `MermaidGraph` carries `nodes`, `edges` and `subgraphs`, plus `node(id)`,
@@ -262,6 +263,36 @@ none.
 One anchor may carry both an `each` and an `all` handler — they answer
 different questions about the same asset. Registering the same mode twice is
 still an error, so typos are still caught.
+
+### Keyed lists
+
+When each item in a checklist needs its own check, a handler that matches on
+the item's text breaks as soon as someone rewords the sentence. Give each item
+an id instead, as a bold word followed by a colon:
+
+```markdown
+> 🛠️ **Verified Checklist:** `releaseRules`
+
+- [x] **changelog**: every user-facing change has an entry
+- [x] **peerRange**: the supported TypeScript range is documented
+```
+
+and bind one handler per id:
+
+```ts
+verify.list.keyed("releaseRules", {
+  changelog: (item) => { /* ... */ },
+  peerRange: (item) => { /* ... */ },
+});
+```
+
+Each top-level item is one case, named by its id. Nested items are not cases of
+their own; they reach their parent's handler as `item.children`. The list and
+the handlers are compared in both directions, so an item with no id, a repeated
+id, an id with no handler, and a handler with no item each fail. `keyed` takes
+the place of `verify.list` on an anchor, and can be combined with
+`verify.list.all`. The id syntax is in
+[docs/anchor-reference.md](./docs/anchor-reference.md#list-item-ids).
 
 Glue is located by, in order: `--glue`, a `<!-- verify: ./x.verify.ts -->` hint
 in the document, then `<name>.verify.ts` beside the Markdown file.
