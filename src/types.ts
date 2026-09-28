@@ -197,6 +197,11 @@ export interface ReviewResult {
 /** A structural problem found while parsing -- reported like a failure. */
 export interface ParseProblem {
   id: string | null;
+  /**
+   * The file the problem is in, when that is not the document -- a type error
+   * in its glue file, for example. `line` and `column` then refer to it.
+   */
+  file?: string;
   line: number;
   /** 1-based column, when the diagnostic points at something inline. */
   column?: number;

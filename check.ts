@@ -17,7 +17,7 @@ const DEFAULT_DOCS = '**/*.md';
 /** Never walk into these while globbing. */
 const IGNORED_DIRS = /(^|\/)(node_modules|\.git|dist|build|coverage|\.next|out)(\/|$)/;
 
-import { loadGlue, resolveGlue, runFile, type RunOptions } from './src/runner.ts';
+import { loadGlue, resolveGlue, runFile, typecheckGlue, type RunOptions } from './src/runner.ts';
 import { c, formatRun, rewriteFromRun, setColor, stampFromRun, stamps } from './src/report.ts';
 import { verify } from './src/framework.ts';
 import { parseMarkdown } from './src/parser.ts';
@@ -71,6 +71,8 @@ OPTIONS
   --no-links        Skip link, anchor and symbol checking.
   --no-reviews      Skip review staleness checking.
   --no-symbols      Check links, but do not import modules to check symbols.
+  --typecheck       Typecheck each document's glue file with the nearest
+                    tsconfig.json, and fail the document on a type error.
   --only <id>       Run only this anchor. Repeatable.
   --bail            Stop at the first failure.
   --timeout <ms>    Per-case timeout. Default 5000, 0 to disable.
@@ -138,6 +140,7 @@ function parseArgs(argv: string[]): Flags {
       case '--no-links': flags.links = false; break;
       case '--no-reviews': flags.reviews = false; break;
       case '--no-symbols': flags.symbols = false; break;
+      case '--typecheck': flags.typecheck = true; break;
       case '--help': case '-h': flags.help = true; break;
       default:
         if (arg.startsWith('-')) throw new Error(`unknown option: ${arg}`);
@@ -308,9 +311,12 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
         `create ${basename(file, extname(file))}.verify.ts next to it, or pass --glue.`,
     );
   }
-  if (gluePath) await loadGlue(gluePath);
+  // Checked before loading, so a glue file that fails to load still reports
+  // the type errors that usually explain why.
+  const typeProblems = gluePath && flags.typecheck ? typecheckGlue(gluePath) : [];
+  if (gluePath) await loadGlue(gluePath, typeProblems);
 
-  const { run, parsed } = await runFile(file, {
+  const { run: ran, parsed } = await runFile(file, {
     only: flags.only!.length ? flags.only : undefined,
     bail: flags.bail,
     timeout: flags.timeout,
@@ -318,6 +324,9 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
     symbols: flags.symbols,
     reviews: flags.reviews,
   });
+  const run: RunResult = typeProblems.length
+    ? { ...ran, problems: [...ran.problems, ...typeProblems], ok: false }
+    : ran;
 
   // A stamp records that a person read this prose against this code. When an
   // anchor is failing the document and the code demonstrably disagree, so that

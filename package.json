@@ -49,7 +49,7 @@
     "check": "bun run check.ts",
     "test": "bun test",
     "demo": "bun run check.ts examples/spec.md",
-    "docs": "bun run check.ts README.md 'docs/*.md' examples/spec.md",
+    "docs": "bun run check.ts README.md 'docs/*.md' examples/spec.md --typecheck",
     "demo:fail": "bun run check.ts examples/broken.md --report",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build && bun test && ./scripts/smoke.sh node",

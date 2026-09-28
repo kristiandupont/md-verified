@@ -1528,6 +1528,24 @@ describe('loadDocument', () => {
     }
   });
 
+  test('with typecheck, reports glue type errors as problems in the glue file', async () => {
+    const doc = 'examples/.tmp-tc-load.md';
+    const glue = 'examples/.tmp-tc-load.verify.ts';
+    await Bun.write(doc, '> 🛠️ **Verified Data:** `t`\n\n| A |\n| - |\n| 1 |\n');
+    await Bun.write(glue, "import { verify } from '../src/index.ts';\nconst n: number = 'x';\nverify.table('t', () => {});\n");
+    try {
+      expect((await loadDocument(doc, { links: false })).problems).toEqual([]);
+
+      const [problem] = (await loadDocument(doc, { links: false, typecheck: true })).problems;
+      expect(problem!.file).toBe(glue);
+      expect([problem!.line, problem!.column]).toEqual([2, 7]);
+      expect(problem!.message).toMatch(/^type error: TS2322/);
+    } finally {
+      await Bun.file(doc).delete();
+      await Bun.file(glue).delete();
+    }
+  });
+
   test('reports references and reviews alongside the cases', async () => {
     const doc = 'examples/.tmp-c.md';
     await Bun.write(doc, '# C\n\n[gone](./nowhere.md)\n');
@@ -1830,6 +1848,81 @@ describe('cli', () => {
       await run([doc, '--stamp', '--force']);
       expect(await digests(doc)).toBe(2);
     }, { failing: true });
+  });
+
+  // --- typechecking glue -------------------------------------------------
+
+  let tcN = 0;
+  /** A document with one passing anchor, and glue that has a type error. */
+  const typeErrorDoc = async (
+    fn: (doc: string) => Promise<void>,
+    opts: { glueHead?: string; appModule?: string } = {},
+  ) => {
+    const tag = `${process.pid}-${tcN++}`;
+    const doc = `examples/.tmp-tc-${tag}.md`;
+    const glue = `examples/.tmp-tc-${tag}.verify.ts`;
+    const app = `examples/.tmp-tc-${tag}.app.ts`;
+
+    await Bun.write(doc, '# T\n\n> 🛠️ **Verified Data:** `t`\n\n| A |\n| - |\n| 1 |\n');
+    if (opts.appModule !== undefined) await Bun.write(app, opts.appModule);
+    await Bun.write(glue, [
+      "import { verify, assert } from '../src/index.ts';",
+      opts.appModule !== undefined ? `import { wrong } from './.tmp-tc-${tag}.app.ts';\nvoid wrong;` : '',
+      opts.glueHead ?? '',
+      "verify.table('t', (row) => {",
+      "  const n: number = row['A'] as string;",
+      "  assert(n !== undefined, 'present');",
+      '});',
+    ].filter(Boolean).join('\n') + '\n');
+
+    try {
+      await fn(doc);
+    } finally {
+      for (const f of [doc, glue, app]) if (await Bun.file(f).exists()) await Bun.file(f).delete();
+    }
+  };
+
+  // A runtime that strips types runs this handler without complaint.
+  test('without --typecheck a glue type error goes unreported', async () => {
+    await typeErrorDoc(async (doc) => {
+      expect((await run([doc])).code).toBe(0);
+    });
+  });
+
+  test('--typecheck fails the document at the glue line', async () => {
+    await typeErrorDoc(async (doc) => {
+      const r = await run([doc, '--typecheck']);
+      expect(r.code).toBe(1);
+      expect(r.stdout).toMatch(/\.verify\.ts:3:9 type error: TS2322: Type 'string' is not assignable to type 'number'/);
+    });
+  });
+
+  test('--typecheck reports type errors in --json with the glue file', async () => {
+    await typeErrorDoc(async (doc) => {
+      const r = await run([doc, '--typecheck', '--json']);
+      const problem = JSON.parse(r.stdout).files[0].problems[0];
+      expect(problem.file).toMatch(/\.verify\.ts$/);
+      expect(problem.line).toBe(3); // the `const n: number` line
+    });
+  });
+
+  test('--typecheck does not report errors in the code the glue imports', async () => {
+    await typeErrorDoc(async (doc) => {
+      const tag = doc.match(/tmp-tc-(.*)\.md$/)![1];
+      const r = await run([doc, '--typecheck']);
+      // Only the glue's own error, not the one in the imported module.
+      expect(r.stdout.match(/type error/g)).toHaveLength(1);
+      expect(r.stdout).not.toContain(`.tmp-tc-${tag}.app.ts:`);
+    }, { appModule: "export const wrong: number = 'text';\n" });
+  });
+
+  test('a glue file that fails to load also lists its type errors', async () => {
+    await typeErrorDoc(async (doc) => {
+      const r = await run([doc, '--typecheck']);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('failed to load');
+      expect(r.stderr).toMatch(/It also has type errors:\n.*TS2322/);
+    }, { glueHead: "throw new Error('glue broke on import');" });
   });
 
   // The resolution hint and the re-exec itself are Node behaviour, so

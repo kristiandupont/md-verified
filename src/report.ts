@@ -424,7 +424,8 @@ export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): 
   out.push(c.bold(run.file));
 
   for (const p of run.problems) {
-    const where = p.column ? `${p.line}:${p.column}` : `line ${p.line}`;
+    const at = p.column ? `${p.line}:${p.column}` : `line ${p.line}`;
+    const where = p.file ? `${p.file}:${p.line}:${p.column ?? 1}` : at;
     out.push(`  ${c.red('\u2716')} ${c.dim(where)} ${p.message}`);
   }
 

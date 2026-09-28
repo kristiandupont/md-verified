@@ -44,6 +44,15 @@ While the major version is `0`, a minor bump may contain breaking changes.
   by id. An item with no id, a repeated id, an id with no handler and a handler
   with no item each fail. It replaces `verify.list` on an anchor and can be
   combined with `verify.list.all`.
+- `--typecheck` typechecks each document's glue file with the compiler options
+  of the nearest `tsconfig.json`, and reports its type errors as problems on
+  the document, so the run fails. Only errors located in the glue file are
+  reported. The check runs before the glue is imported, so a glue file that
+  fails to load lists its type errors in the load error too. Off by default.
+  `RunOptions.typecheck` does the same for `loadDocument()`, and
+  `typecheckGlue()` is exported.
+- `ParseProblem.file`: set when a problem is in a file other than the document,
+  such as a glue type error. `line` and `column` then refer to that file.
 - `stampMarkdown()` and `stampFromRun()`, exported: the stamp-only rewrite that
   `--stamp` uses when it runs without `--write`.
 

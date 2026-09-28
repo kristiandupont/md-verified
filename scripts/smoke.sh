@@ -134,4 +134,18 @@ else
   exit 1
 fi
 
+echo "==> [$RUNTIME] --typecheck must report a glue type error, and only that"
+# The glue imports `md-verified` and an extensionless `../src/plans`, so this
+# also checks that the published types and the tsconfig's resolution are used.
+printf "const wrong: number = 'text';\nvoid wrong;\n" >> docs/plans.verify.ts
+OUT="$($CLI docs/plans.md --typecheck 2>&1 || true)"
+if echo "$OUT" | grep -q "docs/plans.verify.ts:[0-9]*:[0-9]* type error: TS2322" \
+  && [ "$(echo "$OUT" | grep -c 'type error')" = "1" ]; then
+  echo "    type error reported"
+else
+  echo "FAIL: --typecheck did not report exactly the glue's type error"
+  echo "$OUT"
+  exit 1
+fi
+
 echo "==> [$RUNTIME] smoke test passed"

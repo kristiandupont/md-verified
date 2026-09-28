@@ -17,7 +17,7 @@
  * finite set of names, refuse with the reason. `covers()` against a short list
  * passes when it should not.
  */
-import { dirname } from 'node:path';
+import { dirname, relative } from 'node:path';
 
 import ts from 'md-verified-typescript';
 
@@ -206,4 +206,48 @@ export function checkedPropertiesOf(path: string, shown: string, name: string): 
     throw new Error(`${name} in ${shown} has a symbol-keyed property, which has no name to list`);
   }
   return names.sort();
+}
+
+// ---------------------------------------------------------------------------
+// Typechecking glue
+// ---------------------------------------------------------------------------
+
+/** One type error, located in the file that was checked. */
+export interface TypeProblem {
+  /** The checked file, relative to the working directory. */
+  file: string;
+  line: number;
+  column: number;
+  /** `TS2322: ...`, on one line. */
+  message: string;
+}
+
+/**
+ * The type errors in one file, checked with the compiler options of the
+ * nearest tsconfig.json above it.
+ *
+ * Only diagnostics located in `path` itself are returned. Errors in the
+ * application code a glue file imports belong to the project's own `tsc` run,
+ * and options diagnostics -- such as a glue file lying outside `rootDir` --
+ * describe the project's layout rather than the glue.
+ */
+export function typecheckFile(path: string): TypeProblem[] {
+  const program = programFor(path);
+  const source = program.getSourceFile(path);
+  if (!source) throw new Error(`${path} could not be loaded by the type checker`);
+
+  const diagnostics = [
+    ...program.getSyntacticDiagnostics(source),
+    ...program.getSemanticDiagnostics(source),
+  ];
+
+  return diagnostics.map((d) => {
+    const at = d.start === undefined ? null : source.getLineAndCharacterOfPosition(d.start);
+    return {
+      file: relative(process.cwd(), path),
+      line: at ? at.line + 1 : 1,
+      column: at ? at.character + 1 : 1,
+      message: `TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`,
+    };
+  });
 }

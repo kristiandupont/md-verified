@@ -14,6 +14,7 @@ import { findGlueHint, parseMarkdown } from './parser.ts';
 import { checkReferences } from './references.ts';
 import { checkReviews } from './reviews.ts';
 import { assertionCount } from './assertions.ts';
+import { typecheckFile } from './checker.ts';
 import { getRegistrations, verify, type ItemHandler, type VerifyContext } from './framework.ts';
 import type {
   Anchor,
@@ -42,6 +43,11 @@ export interface RunOptions {
   bail?: boolean;
   /** Per-case timeout in ms. `0` disables. */
   timeout?: number;
+  /**
+   * Typecheck the glue file before loading it, and report its type errors as
+   * problems. Used by `loadDocument` and the CLI, which are what locate glue.
+   */
+  typecheck?: boolean;
 }
 
 /** Parse and run one Markdown file against whatever is currently registered. */
@@ -461,6 +467,7 @@ export async function loadDocument(
   verify.reset();
 
   const parsed = parseMarkdown(source, file);
+  let typeProblems: ParseProblem[] = [];
 
   if (parsed.anchors.length > 0) {
     const gluePath = resolveGlue(file, options.glue, source);
@@ -470,7 +477,8 @@ export async function loadDocument(
           `create ${basename(file, extname(file))}.verify.ts next to it, or pass { glue }.`,
       );
     }
-    await loadGlue(gluePath);
+    if (options.typecheck) typeProblems = typecheckGlue(gluePath);
+    await loadGlue(gluePath, typeProblems);
   }
 
   const suites: DocumentSuite[] = parsed.anchors.map((anchor) => {
@@ -492,7 +500,7 @@ export async function loadDocument(
     file,
     parsed,
     suites,
-    problems: [...parsed.problems, ...references],
+    problems: [...parsed.problems, ...typeProblems, ...references],
     reviews: checkReviews(parsed, { reviews: options.reviews }),
   };
 }
@@ -543,17 +551,38 @@ export function resolveGlue(mdPath: string, explicit?: string, source?: string):
  * bare error says nothing about which file it came from. Callers add the
  * document; this adds the glue file and keeps the original as `cause`.
  */
-export async function loadGlue(path: string): Promise<void> {
+export async function loadGlue(path: string, typeProblems: ParseProblem[] = []): Promise<void> {
   try {
     await import(`${path}?v=${Date.now()}`);
   } catch (err) {
     const cause = err instanceof Error ? err : new Error(String(err));
+    // A glue file that does not load often does not typecheck either, and the
+    // type error is usually the more direct explanation.
+    const types = typeProblems.map((p) => `\n  ${p.file}:${p.line}:${p.column} ${p.message}`).join('');
     throw new Error(
       `glue file ${relative(process.cwd(), path)} failed to load: ${cause.message}` +
-        resolutionHint(cause),
+        resolutionHint(cause) +
+        (types ? `\nIt also has type errors:${types}` : ''),
       { cause },
     );
   }
+}
+
+/**
+ * A glue file's type errors, as problems on the document it belongs to.
+ *
+ * Glue is imported, never compiled, and a runtime that strips types runs a
+ * handler with a type error without complaint. A project whose tsconfig does
+ * not include its docs never checks glue at all.
+ */
+export function typecheckGlue(path: string): ParseProblem[] {
+  return typecheckFile(path).map((p) => ({
+    id: null,
+    file: p.file,
+    line: p.line,
+    column: p.column,
+    message: `type error: ${p.message}`,
+  }));
 }
 
 /**
