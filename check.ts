@@ -18,7 +18,7 @@ const DEFAULT_DOCS = '**/*.md';
 const IGNORED_DIRS = /(^|\/)(node_modules|\.git|dist|build|coverage|\.next|out)(\/|$)/;
 
 import { loadGlue, resolveGlue, runFile, type RunOptions } from './src/runner.ts';
-import { c, formatRun, rewriteFromRun, setColor, stamps } from './src/report.ts';
+import { c, formatRun, rewriteFromRun, setColor, stampFromRun, stamps } from './src/report.ts';
 import { verify } from './src/framework.ts';
 import { parseMarkdown } from './src/parser.ts';
 import type { RunResult } from './src/types.ts';
@@ -344,7 +344,12 @@ async function checkOne(file: string, flags: Flags): Promise<RunResult> {
   }
 
   if (flags.write || flags.report || flags.reset || stamp !== false) {
-    const next = rewriteFromRun(run, parsed, { reset: flags.reset, stamp });
+    // `--stamp` on its own edits the stamped reviews only. Rewriting the rest
+    // of the document from this run would commit glyphs nobody asked for.
+    const next =
+      flags.write || flags.report || flags.reset
+        ? rewriteFromRun(run, parsed, { reset: flags.reset, stamp })
+        : stampFromRun(run, parsed, stamp);
 
     if (flags.report) {
       if (!flags.json) console.log(next);

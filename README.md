@@ -429,7 +429,11 @@ weaker claim, deliberately, because the alternative is either checking nothing
 or pretending prose can be executed.
 
 `--stamp` records the digest. It is **separate from `--write` on purpose**: a
-stamp applied as a side effect of a normal run would attest to nothing.
+stamp applied as a side effect of a normal run would attest to nothing. The
+separation works in the other direction too: on its own, `--stamp` edits only
+the reviews it stamps. It records the digest and removes the `(Stale)` marking
+a previous `--write` left on that review, and it does not touch any anchor's
+glyph. Combine it with `--write` to record the whole run as well.
 
 Name the review you actually re-read — `--stamp settlement`, repeatable. Bare
 `--stamp` stamps every review in the document, which in a document with six of

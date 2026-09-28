@@ -195,20 +195,78 @@ function rewriteReviewQuote(
 
   lines[0] = head.groups!.prefix! + glyph + ' ' + body + (suffix ? ' ' + suffix : '');
 
-  const prefix = head.groups!.prefix!.replace(/\s+$/, ' ');
-
   if (options.reset) {
     return lines.filter((l) => !DIGEST_LINE_RE.test(l)).join('\n');
   }
   if (!stamping) return lines.join('\n');
 
-  const digestLine = `${prefix}**Digest:** \`${result!.digest}\``;
+  return withDigest(lines, head.groups!.prefix!, result!.digest!).join('\n');
+}
+
+/** Replace the review's `**Digest:**` line, or add one at the end. */
+function withDigest(lines: string[], quotePrefix: string, digest: string): string[] {
+  const digestLine = `${quotePrefix.replace(/\s+$/, ' ')}**Digest:** \`${digest}\``;
   const existing = lines.findIndex((l) => DIGEST_LINE_RE.test(l));
 
-  if (existing === -1) lines.push(digestLine);
-  else lines[existing] = digestLine;
+  const out = [...lines];
+  if (existing === -1) out.push(digestLine);
+  else out[existing] = digestLine;
+  return out;
+}
 
-  return lines.join('\n');
+/**
+ * Return `source` with the named reviews stamped, and nothing else changed.
+ *
+ * This is what `--stamp` does without `--write`. A full rewrite would also set
+ * every anchor's glyph from this run, and a committed `✅` then claims a pass
+ * that was only true when the stamp was made. So only the stamped reviews are
+ * edited: each gets its current digest, and loses the staleness markers a
+ * previous `--write` put on it -- the `❌` glyph, the `(Stale)` suffix and the
+ * `REVIEW:` comment -- because the stamp resolves exactly what they report.
+ * A review is never given `✅` here; that remains the job of `--write`.
+ */
+export function stampMarkdown(
+  source: string,
+  reviews: Review[],
+  reviewResults: ReviewResult[],
+  stamp: RewriteOptions['stamp'],
+): string {
+  const byReview = new Map(reviewResults.map((r) => [r.line + ':' + r.id, r]));
+  let out = source;
+
+  // Back to front, so earlier offsets stay valid.
+  for (const review of [...reviews].sort((a, b) => b.quoteRange.start - a.quoteRange.start)) {
+    const result = byReview.get(review.line + ':' + review.id);
+    if (!stamps(stamp, review.id) || !result?.digest) continue;
+
+    const lines = source.slice(review.quoteRange.start, review.quoteRange.end).split('\n');
+    const head = REVIEW_LINE_RE.exec(lines[0] ?? '');
+    if (!head) continue;
+
+    const glyph = head.groups!.glyph?.trim();
+    const body = head.groups!.body!;
+    if (glyph === STATUS_GLYPH.failed || SUFFIX_RE.test(body)) {
+      lines[0] = head.groups!.prefix! + REVIEW_PENDING_GLYPH + ' ' + body.replace(SUFFIX_RE, '');
+    }
+
+    const gap = source.slice(review.gapRange.start, review.gapRange.end);
+    const quote = withDigest(lines, head.groups!.prefix!, result.digest).join('\n');
+    // Leave the gap byte-for-byte unless there is a note of ours to remove.
+    const nextGap = /<!--\s*REVIEW:/.test(gap) ? rewriteGap(gap, []) : gap;
+
+    out = out.slice(0, review.quoteRange.start) + quote + nextGap + out.slice(review.gapRange.end);
+  }
+
+  return out;
+}
+
+/** Convenience: stamp straight from a `RunResult`. */
+export function stampFromRun(
+  run: RunResult,
+  parsed: { reviews: Review[] },
+  stamp: RewriteOptions['stamp'],
+): string {
+  return stampMarkdown(run.source, parsed.reviews, run.reviews, stamp);
 }
 
 function rewriteQuote(
@@ -341,6 +399,25 @@ const MARK: Record<string, () => string> = {
   skipped: () => c.yellow('\u25cb'),
 };
 
+/**
+ * The frames of a stack, without its header.
+ *
+ * A stack begins with `Error: <message>`, and the message may span several
+ * lines. Dropping only the first line would print the rest of the message a
+ * second time, below the copy the report has already shown.
+ */
+function stackFrames(stack: string, message: string | null): string[] {
+  // Search after `<name>: `, or a message that also occurs in the name
+  // (`Error`, `r`) matches inside the name and leaves part of it as a frame.
+  const sep = stack.indexOf(': ');
+  const at = message && sep >= 0 ? stack.indexOf(message, sep + 2) : -1;
+  const rest = at >= 0 ? stack.slice(at + message!.length) : stack.split('\n').slice(1).join('\n');
+  return rest
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
 /** Render a run as terminal text. */
 export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): string {
   const out: string[] = [];
@@ -386,7 +463,7 @@ export function formatRun(run: RunResult, options: { verbose?: boolean } = {}): 
           if (line.trim()) out.push(`        ${c.red(line.trim())}`);
         }
         if (options.verbose && cse.stack) {
-          out.push(...cse.stack.split('\n').slice(1, 4).map((l) => c.dim('        ' + l.trim())));
+          out.push(...stackFrames(cse.stack, cse.error).slice(0, 3).map((l) => c.dim('        ' + l)));
         }
       } else if (options.verbose) {
         out.push(`      ${c.green('\u00b7')} ${c.dim(cse.name)}`);

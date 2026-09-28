@@ -8,7 +8,22 @@ While the major version is `0`, a minor bump may contain breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- `--stamp` without `--write` rewrote every anchor's glyph from the run, so
+  stamping one review could turn each `🛠️` in the file into `✅`. A committed
+  `✅` claims a pass that only held when the stamp was made. `--stamp` on its
+  own now edits only the stamped reviews: it records the digest and removes the
+  `❌`, `(Stale)` and `REVIEW:` markings a previous `--write` put on that
+  review. It never writes `✅`. `--write --stamp` behaves as before.
+- `--verbose` printed the second and later lines of a multi-line failure
+  message twice, because it took every stack line after the first as a frame.
+  The stack's header is now removed by matching the message.
+
+### Added
+
+- `stampMarkdown()` and `stampFromRun()`, exported: the stamp-only rewrite that
+  `--stamp` uses when it runs without `--write`.
 
 ## [0.2.0] - 2026-08-27
 
