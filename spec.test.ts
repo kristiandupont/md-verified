@@ -1031,6 +1031,20 @@ describe('terminal output', () => {
     expect(out.match(/third line/g)).toHaveLength(1);
     expect(out).toMatch(/third line\n\s+at /);
   });
+
+  test('--verbose finds the message after the error name, not inside it', async () => {
+    verify.reset();
+    verify.table('t', () => {
+      throw new Error('r');
+    });
+    const src = '> 🛠️ **Verified Data:** `t`\n\n| A |\n| - |\n| 1 |\n';
+    const run = await runParsed(parseMarkdown(src, 't.md'), { links: false });
+
+    setColor(false);
+    const out = formatRun(run, { verbose: true });
+    expect(out).not.toContain('ror: r');
+    expect(out).toMatch(/ r\n\s+at /);
+  });
 });
 
 describe('reviews', () => {

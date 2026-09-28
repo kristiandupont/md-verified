@@ -407,7 +407,10 @@ const MARK: Record<string, () => string> = {
  * second time, below the copy the report has already shown.
  */
 function stackFrames(stack: string, message: string | null): string[] {
-  const at = message ? stack.indexOf(message) : -1;
+  // Search after `<name>: `, or a message that also occurs in the name
+  // (`Error`, `r`) matches inside the name and leaves part of it as a frame.
+  const sep = stack.indexOf(': ');
+  const at = message && sep >= 0 ? stack.indexOf(message, sep + 2) : -1;
   const rest = at >= 0 ? stack.slice(at + message!.length) : stack.split('\n').slice(1).join('\n');
   return rest
     .split('\n')
