@@ -1014,6 +1014,25 @@ describe('assertion counting', () => {
   });
 });
 
+describe('terminal output', () => {
+  // A stack begins with the whole message, so taking "every line after the
+  // first" as the frames printed the message's later lines a second time.
+  test('--verbose prints a multi-line message once, then the frames', async () => {
+    verify.reset();
+    verify.table('t', () => {
+      throw new Error('first line\nsecond line\nthird line');
+    });
+    const src = '> 🛠️ **Verified Data:** `t`\n\n| A |\n| - |\n| 1 |\n';
+    const run = await runParsed(parseMarkdown(src, 't.md'), { links: false });
+
+    setColor(false);
+    const out = formatRun(run, { verbose: true });
+    expect(out.match(/second line/g)).toHaveLength(1);
+    expect(out.match(/third line/g)).toHaveLength(1);
+    expect(out).toMatch(/third line\n\s+at /);
+  });
+});
+
 describe('reviews', () => {
   let n = 0;
   /** A throwaway module + document pair, cleaned up afterwards. */
@@ -1486,7 +1505,7 @@ describe('cli', () => {
   /** A throwaway document, optionally carrying an anchor that always fails. */
   const stampDoc = async (
     fn: (doc: string) => Promise<void>,
-    opts: { failing?: boolean } = {},
+    opts: { failing?: boolean; passing?: boolean } = {},
   ) => {
     const tag = `${process.pid}-${stampN++}`;
     const doc = `examples/.tmp-stamp-${tag}.md`;
@@ -1499,11 +1518,16 @@ describe('cli', () => {
       ...(opts.failing
         ? ['> 🛠️ **Verified Data:** `bad`', '', '| c |', '| - |', '| 9 |', '']
         : []),
+      ...(opts.passing
+        ? ['> 🛠️ **Verified Data:** `good`', '', '| c |', '| - |', '| 1 |', '']
+        : []),
     ].join('\n'));
 
     await Bun.write(glue, opts.failing
       ? "import { verify, assert } from '../src/index.ts';\nverify.table('bad', () => assert(false, 'always wrong'));\n"
-      : "import { verify } from '../src/index.ts';\n");
+      : opts.passing
+        ? "import { verify, assert } from '../src/index.ts';\nverify.table('good', () => assert(true, 'never'));\n"
+        : "import { verify } from '../src/index.ts';\n");
 
     try {
       await fn(doc);
@@ -1557,6 +1581,49 @@ describe('cli', () => {
       expect(r.stderr).toContain('no review named `nosuchreview`');
       expect(await digests(doc)).toBe(0);
     });
+  });
+
+  // A committed `✅` claims a pass. One written as a side effect of stamping
+  // would go on claiming it after the code changed.
+  test('--stamp without --write changes only the stamped review', async () => {
+    await stampDoc(async (doc) => {
+      const before = await Bun.file(doc).text();
+      expect((await run([doc, '--stamp', 'alpha'])).code).toBe(1);
+
+      const after = await Bun.file(doc).text();
+      expect(after).toContain('> 🛠️ **Verified Data:** `good`');
+      expect(after).toContain('> 👁️ **Reviewed:** `alpha`');
+      // The only edit is the digest line added to alpha.
+      expect(after.replace(/^> \*\*Digest:\*\*.*\n/m, '')).toBe(before);
+      expect(await digests(doc)).toBe(1);
+    }, { passing: true });
+  });
+
+  test('--stamp removes the staleness markers --write put on that review', async () => {
+    await stampDoc(async (doc) => {
+      await run([doc, '--write']);
+      const written = await Bun.file(doc).text();
+      expect(written).toContain('> ❌ **Reviewed:** `alpha` (Stale)');
+
+      await run([doc, '--stamp', 'alpha']);
+      const after = await Bun.file(doc).text();
+
+      expect(after).toContain('> 👁️ **Reviewed:** `alpha`\n');
+      expect(after.match(/<!-- REVIEW:/g)).toHaveLength(1); // beta's note remains
+      expect(after).toContain('> ❌ **Reviewed:** `beta` (Stale)');
+      // The anchor keeps the glyph the earlier --write gave it.
+      expect(after).toContain('> ✅ **Verified Data:** `good`');
+    }, { passing: true });
+  });
+
+  test('--write --stamp still writes the whole run', async () => {
+    await stampDoc(async (doc) => {
+      expect((await run([doc, '--write', '--stamp'])).code).toBe(0);
+      const after = await Bun.file(doc).text();
+      expect(after).toContain('> ✅ **Verified Data:** `good`');
+      expect(after).toContain('> ✅ **Reviewed:** `alpha`');
+      expect(await digests(doc)).toBe(2);
+    }, { passing: true });
   });
 
   // The document and the code demonstrably disagree, so a reading of the two
