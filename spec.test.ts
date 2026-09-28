@@ -961,6 +961,7 @@ describe('assertions', () => {
 
 describe('type introspection', () => {
   const SRC = 'examples/.tmp-types.ts';
+  const REEXPORT = 'examples/.tmp-types-reexport.ts';
   /** What glue passes: a URL, so the answer does not depend on the cwd. */
   const mod = () => new URL(`file://${resolve(SRC)}`);
 
@@ -980,6 +981,28 @@ describe('type introspection', () => {
       'export interface Extended extends ActionEffects { extra: number }',
       'export type ObjectAlias = { alpha: string; beta: number };',
       "export enum Colour { Red = 'red', Blue = 'blue' }",
+      // Forms only the type checker can answer.
+      "export const Status = { Active: 'active', Paused: 'paused' } as const;",
+      'export type Status = (typeof Status)[keyof typeof Status];',
+      "const ROLES = ['viewer', 'admin'] as const;",
+      'export type Role = (typeof ROLES)[number];',
+      "export type NotPaused = Exclude<Status, 'paused'>;",
+      "type Owners = { b: 'own'; a: 'own'; c: 'other' };",
+      "export type OwnKeys = { [K in keyof Owners]: Owners[K] extends 'own' ? K : never }[keyof Owners];",
+      "export type Nothing = Exclude<'a', 'a'>;",
+      'export type WithId = ObjectAlias & { id: string };',
+      // Forms that have no finite answer.
+      'export type Generic<T> = keyof T;',
+      'export type Prefixed = `on${string}`;',
+      'export type Dictionary = Record<string, number>;',
+      "import type { Missing } from './does-not-exist.ts';",
+      'export type Unresolved = Missing;',
+      'export const plainValue = 1;',
+      '',
+    ].join('\n'));
+    await Bun.write(REEXPORT, [
+      "export type { OutcomeKind as Renamed } from './.tmp-types.ts';",
+      "export * from './.tmp-types.ts';",
       '',
     ].join('\n'));
     clearSymbolCache();
@@ -987,6 +1010,7 @@ describe('type introspection', () => {
 
   afterAll(async () => {
     await Bun.file(SRC).delete();
+    await Bun.file(REEXPORT).delete();
     clearSymbolCache();
   });
 
@@ -1014,8 +1038,49 @@ describe('type introspection', () => {
     expect(() => typeMembers(mod(), 'NotLiterals')).toThrow(/not a union of string literals/);
   });
 
-  test('refuses a union built by reference, which needs a type checker', () => {
-    expect(() => typeMembers(mod(), 'Referenced')).toThrow(/keyof typeof lookup/);
+  // Each of these was refused before the checker, and each is how a typed
+  // codebase usually spells a closed set.
+  test('resolves keyof typeof through the checker', () => {
+    expect(typeMembers(mod(), 'Referenced')).toEqual(['a']);
+  });
+
+  test('resolves the values of an as-const object, sorted', () => {
+    expect(typeMembers(mod(), 'Status')).toEqual(['active', 'paused']);
+  });
+
+  test('resolves an as-const array indexed by number', () => {
+    expect(typeMembers(mod(), 'Role')).toEqual(['admin', 'viewer']);
+  });
+
+  test('resolves Exclude and mapped conditional types', () => {
+    expect(typeMembers(mod(), 'NotPaused')).toEqual(['active']);
+    expect(typeMembers(mod(), 'OwnKeys')).toEqual(['a', 'b']);
+  });
+
+  test('an empty union is an empty set, not a refusal', () => {
+    expect(typeMembers(mod(), 'Nothing')).toEqual([]);
+  });
+
+  test('follows a renamed re-export and export *', () => {
+    const re = new URL(`file://${resolve(REEXPORT)}`);
+    expect(typeMembers(re, 'Renamed')).toEqual(['no-result', 'note-error', 'success']);
+    expect(typeMembers(re, 'Role')).toEqual(['admin', 'viewer']);
+  });
+
+  test('refuses a generic type', () => {
+    expect(() => typeMembers(mod(), 'Generic')).toThrow(/is generic/);
+  });
+
+  test('refuses a template literal type, which is not a finite set', () => {
+    expect(() => typeMembers(mod(), 'Prefixed')).toThrow(/it includes `.*on\$\{string\}`/);
+  });
+
+  test('refuses a type that resolves to any, naming the likely cause', () => {
+    expect(() => typeMembers(mod(), 'Unresolved')).toThrow(/resolves to `any`.*could not be resolved/);
+  });
+
+  test('refuses a value, and says what to write instead', () => {
+    expect(() => typeMembers(mod(), 'plainValue')).toThrow(/is a value, not a type/);
   });
 
   test('points at propertiesOf when given an interface', () => {
@@ -1034,8 +1099,16 @@ describe('type introspection', () => {
     expect(propertiesOf(mod(), 'ObjectAlias')).toEqual(['alpha', 'beta']);
   });
 
-  test('refuses an interface with a heritage clause rather than half-answering', () => {
-    expect(() => propertiesOf(mod(), 'Extended')).toThrow(/extends another type/);
+  test('includes inherited members of an interface, sorted', () => {
+    expect(propertiesOf(mod(), 'Extended')).toEqual(['commit', 'extra', 'label', 'revert']);
+  });
+
+  test('reads an intersection', () => {
+    expect(propertiesOf(mod(), 'WithId')).toEqual(['alpha', 'beta', 'id']);
+  });
+
+  test('refuses a type with an index signature', () => {
+    expect(() => propertiesOf(mod(), 'Dictionary')).toThrow(/index signature/);
   });
 
   test('points at typeMembers when given a union', () => {
