@@ -107,7 +107,10 @@ it.
 | ❌    | `failed`  | At least one case failed. Details in the comment below.   |
 | ⚠️    | `skipped` | Not run: filtered out by `--only`, or after `--bail`.      |
 
-A review carries 👁️ until it is stamped, then ✅ or ❌ like anything else.
+A review starts with 👁️. A run with `--write` gives it ✅ when it is current
+and ❌ when it is not, and a review that has never been stamped is not current.
+`--stamp` without `--write` records only the digest: it never writes ✅, and it
+turns that review's ❌ back into 👁️.
 
 An anchor with no registered handler is `failed`, not `skipped`: a mistyped
 id would otherwise remove the check and leave the run green.

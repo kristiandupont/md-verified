@@ -8,6 +8,16 @@ While the major version is `0`, a minor bump may contain breaking changes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-09-29
+
+From a second adoption, in a TypeScript monorepo. Checklist items can carry ids
+that handlers bind to, `typeMembers()` and `propertiesOf()` read types through
+the type checker, and `--typecheck` checks glue. One breaking change:
+`ListItem.text` no longer includes the task marker for items that start with
+inline markup. Also includes two fixes that were never released as 0.2.1.
+
 ### Changed
 
 - **Breaking:** `ListItem.text` no longer starts with the task marker when the
@@ -67,6 +77,8 @@ While the major version is `0`, a minor bump may contain breaking changes.
 - `--verbose` printed the second and later lines of a multi-line failure
   message twice, because it took every stack line after the first as a frame.
   The stack's header is now removed by matching the message.
+- `--help` and the README said that checking `#symbol` links imports the
+  linked modules. It parses them and never imports them.
 
 ## [0.2.0] - 2026-08-27
 
@@ -177,5 +189,6 @@ Initial release.
   failed, and `--reset` to undo it.
 - `--json` output, `--only`, `--bail`, `--timeout` and `--covering`.
 
-[Unreleased]: https://github.com/kristiandupont/md-verified/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kristiandupont/md-verified/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kristiandupont/md-verified/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kristiandupont/md-verified/releases/tag/v0.2.0

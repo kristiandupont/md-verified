@@ -58,7 +58,7 @@ One question decides it:
 typo. A wrong sentence that survives three releases because nothing contradicts
 it is the thing this tool exists for.
 
-Three shapes reliably pay for themselves:
+Four shapes reliably pay for themselves:
 
 **A closed set.** The payment methods. The legal state transitions. The tax
 jurisdictions. Someone will add a fifth one and not think about your document.
@@ -72,6 +72,20 @@ computed, including the one edge case people get wrong. You are checking the
 
 **Structure you would have drawn anyway.** If the diagram is there for the
 reader, verifying it costs one handler.
+
+**A dependency that no single file shows.** This table has one row for each
+member of a union declared in another module. Each method of this interface
+has a rule described here. The compiler does not know the document exists, and
+a linter checks one file at a time, so neither reports it when one side
+changes. The document is the one place the dependency is written down, together
+with the reason for it. `covers()` against `typeMembers()` or `propertiesOf()`
+turns it into a check: when someone adds a member, the run fails and names it,
+and the row they add is what the reviewer reads.
+
+This is worth an anchor when each row says something the type does not: what
+the member means, how it is handled, why it exists. A table that only repeats a
+union's names restates the type, which is the second item under
+[what to leave alone](#what-to-leave-alone).
 
 ## What to leave alone
 
