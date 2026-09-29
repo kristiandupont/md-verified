@@ -736,6 +736,14 @@ Without that split you hit one of these:
 
 The first is the dangerous one, because nothing tells you.
 
+`--typecheck` removes it. md-verified then checks each document's glue file
+itself, with the compiler options of the nearest `tsconfig.json`, and fails the
+document on a type error, reported at the glue file's line and column. The
+tsconfig's `include` and `rootDir` do not matter to this check, so glue in
+`docs/` is checked without a separate config. Errors in the application code
+the glue imports are left to your own `tsc` run. The two-config split above is
+still what gives your editor the project's options for glue files.
+
 Glue can import application code however the rest of your project does —
 `tsconfig` path aliases work, since Bun reads them.
 
