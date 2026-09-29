@@ -70,7 +70,7 @@ OPTIONS
                     given, or **/*.md when none are.
   --no-links        Skip link, anchor and symbol checking.
   --no-reviews      Skip review staleness checking.
-  --no-symbols      Check links, but do not import modules to check symbols.
+  --no-symbols      Check links, but not the symbols in #fragments.
   --typecheck       Typecheck each document's glue file with the nearest
                     tsconfig.json, and fail the document on a type error.
   --only <id>       Run only this anchor. Repeatable.

@@ -55,17 +55,22 @@ md-verified 'docs/**/*.md'             # check all (globs are expanded by the to
 md-verified docs/thing.md --json       # machine-readable, for triage
 md-verified docs/thing.md --write      # fold results back in (never stamps)
 md-verified docs/thing.md --stamp      # record reviews as read
+md-verified docs/thing.md --typecheck  # also typecheck the glue file
 md-verified --covering src/x.ts        # which docs describe this file?
 ```
 
 Inside the md-verified repository itself, use `bun run check.ts` in place of
 `md-verified`.
 
-Under Node, glue cannot use `enum`, `namespace`, parameter properties or
-decorators — Node strips types rather than transforming them. If a glue file
-fails to load with `not supported in strip-only mode`, either avoid the
-construct or prefix the command with
-`NODE_OPTIONS=--experimental-transform-types`. Bun has no such limit.
+Under Node, two things stop glue from loading. Bun has neither limit.
+
+- An extensionless relative import anywhere the glue's imports reach
+  (`import { x } from './classify'`) fails with `ERR_MODULE_NOT_FOUND`. Pass
+  `--import tsx` so the command re-runs with a loader.
+- `enum`, `namespace`, parameter properties and decorators fail with
+  `not supported in strip-only mode`, because Node strips types rather than
+  transforming them. Avoid the construct, or prefix the command with
+  `NODE_OPTIONS=--experimental-transform-types`.
 
 Exit code is 0 only when every anchor passed, every reference resolved, and
 every review is current.
@@ -155,7 +160,11 @@ covers what earns an anchor and what does not, in more depth than this page.
 The short version:
 
 - **Do verify** closed sets (`covers()` — the highest-value check here), a rule
-  with a canonical example, and diagrams you would have drawn anyway.
+  with a canonical example, diagrams you would have drawn anyway, and
+  dependencies between files that no single file shows, such as a table with
+  one row per member of a union declared elsewhere. When the set is a type,
+  compare against `typeMembers()` or `propertiesOf()` rather than a list
+  written in the glue.
 - **Do not verify** rationale, anything the types already prove, anything where
   the handler would restate the implementation, or a large sample space.
 - **Do not add a diagram** you would not sketch on a whiteboard when explaining
@@ -211,6 +220,17 @@ assert(taxRate < 1, 'tax rates are fractions, not percentages');
 // use assert whenever you can say it better yourself
 ```
 
+When each item of a checklist has its own check, give the items ids and bind
+one handler per id, so rewording an item does not break its check:
+
+```markdown
+- [x] **refunds**: refunds are issued manually
+```
+
+```ts
+verify.list.keyed('refundRules', { refunds: (item) => { /* ... */ } });
+```
+
 See
 [docs/anchor-reference.md](../../../docs/anchor-reference.md) for the full
 vocabulary and [README.md](../../../README.md) for the handler API.
@@ -250,12 +270,13 @@ this project already does. Glue is a `.verify.ts` file next to its document.
 **Treat `.verify.ts` exactly like `.test.ts`**: typechecked, never shipped. If
 you add the first document to a project, check that
 
-- the glue is inside the `tsconfig.json` `include` (otherwise type errors in
-  handlers are silent — Bun strips types and the document still passes), and
+- the documents are run with `--typecheck`, or the glue is inside the
+  `tsconfig.json` `include` (otherwise type errors in handlers are silent —
+  runtimes strip types and the document still passes), and
 - the *build* config excludes `**/*.verify.ts` (otherwise it compiles into the
   production output).
 
-If neither is true, say so rather than silently leaving it broken.
+If either is not true, say so rather than silently leaving it broken.
 
 ## Things that will trip you up
 
@@ -270,5 +291,6 @@ If neither is true, say so rather than silently leaving it broken.
   it.
 - **Ids are unique per document, not per project.** Two documents may both use
   `prices`; load them with `loadDocument()`.
-- **Glue outside `tsconfig` `include` is not typechecked.** The document will
-  still pass while the handler has a type error in it.
+- **Without `--typecheck`, glue outside `tsconfig` `include` is not
+  typechecked.** The document will still pass while the handler has a type
+  error in it.

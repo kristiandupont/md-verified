@@ -77,6 +77,8 @@ inline markup. Also includes two fixes that were never released as 0.2.1.
 - `--verbose` printed the second and later lines of a multi-line failure
   message twice, because it took every stack line after the first as a frame.
   The stack's header is now removed by matching the message.
+- `--help` and the README said that checking `#symbol` links imports the
+  linked modules. It parses them and never imports them.
 
 ## [0.2.0] - 2026-08-27
 

@@ -271,6 +271,9 @@ One anchor may carry both an `each` and an `all` handler — they answer
 different questions about the same asset. Registering the same mode twice is
 still an error, so typos are still caught.
 
+Glue is located by, in order: `--glue`, a `<!-- verify: ./x.verify.ts -->` hint
+in the document, then `<name>.verify.ts` beside the Markdown file.
+
 ### Keyed lists
 
 When each item in a checklist needs its own check, a handler that matches on
@@ -300,9 +303,6 @@ id, an id with no handler, and a handler with no item each fail. `keyed` takes
 the place of `verify.list` on an anchor, and can be combined with
 `verify.list.all`. The id syntax is in
 [docs/anchor-reference.md](./docs/anchor-reference.md#list-item-ids).
-
-Glue is located by, in order: `--glue`, a `<!-- verify: ./x.verify.ts -->` hint
-in the document, then `<name>.verify.ts` beside the Markdown file.
 
 ### Assertions
 
@@ -380,8 +380,8 @@ which row should exist, which is what makes the annotation actionable.
 
 "This table's rows are exactly the members of that union" is the archetypal
 claim in a typed codebase, and the one that rots silently. `typeMembers()` reads
-the member list off the declaration, so `covers()` has something to compare
-against that nobody has to maintain:
+the member list out of the type, so `covers()` has something to compare against
+that nobody has to maintain:
 
 ```ts
 import { verify, covers, typeMembers } from "md-verified";
@@ -463,9 +463,10 @@ is ever checked — bare inline code is not treated as a symbol, because
 `$10.00`, `--write` and `[itemsTotal: Currency]` are all inline code in a
 perfectly healthy spec. A document opts in by linking.
 
-Only files you fragment-link are imported, and only to read their export names.
-`--no-symbols` keeps the link checks but imports nothing; `--no-links` skips the
-pass entirely.
+Only files you fragment-link are read, and only for their export names. They
+are parsed, never imported, so nothing in your project is executed.
+`--no-symbols` keeps the link checks but skips the symbols; `--no-links` skips
+the pass entirely.
 
 ## Reviews: the parts that cannot be executed
 
@@ -580,6 +581,7 @@ md-verified <file.md|glob> [...] [options]
   --no-links      Skip link, anchor and symbol checking
   --no-symbols    Skip symbol checking
   --no-reviews    Skip review staleness checking
+  --typecheck     Typecheck each document's glue file; a type error fails it
   --only <id>     Run one anchor (repeatable)
   --bail          Stop at the first failure
   --timeout <ms>  Per-case timeout (default 5000, 0 disables)
@@ -600,6 +602,7 @@ check and leave the run green.
 | Schema or diagram malformed | a failed anchor              | yes                             |
 | No handler registered       | a failed anchor              | yes                             |
 | Broken link or symbol       | a problem, with `line:col`   | no — it is prose, not an anchor |
+| Glue type error (`--typecheck`) | a problem, with `file:line:col` | no — it is in the glue file |
 | Covered code changed        | a stale review               | yes                             |
 
 A row whose cell will not coerce never reaches your handler, and a whole-asset
@@ -761,6 +764,7 @@ Glue can import application code however the rest of your project does —
 | [`src/assertions.ts`](./src/assertions.ts)               | `assert`, `equals`, `oneOf`                                  |
 | [`src/reviews.ts`](./src/reviews.ts)                     | Review staleness and digests                                 |
 | [`src/symbols.ts`](./src/symbols.ts)                     | Static symbol lookup, via the TS compiler API                |
+| [`src/checker.ts`](./src/checker.ts)                     | Type-checker programs: type introspection, `--typecheck`     |
 | [`src/coerce.ts`](./src/coerce.ts)                       | `Schema:` value types                                        |
 | [`check.ts`](./check.ts)                                 | CLI                                                          |
 | [`examples/spec.md`](./examples/spec.md)                 | A specification that passes                                  |
@@ -781,9 +785,10 @@ Glue can import application code however the rest of your project does —
   See [Runtimes](#runtimes): `--import <loader>` covers resolution,
   `NODE_OPTIONS=--experimental-transform-types` covers the type features.
 - Deno is untested.
-- Symbol lookup reads files rather than importing them, so nothing in the
-  checked project is executed and type-only exports are visible. The trade-off
-  is that `export * from './x'` is not followed.
+- Symbol links and review digests read files rather than importing them, so
+  nothing in the checked project is executed and type-only exports are visible.
+  They do not use the type checker, so `export * from './x'` is not followed
+  there. `typeMembers()` and `propertiesOf()` do follow re-exports.
 - A reference with no definition (`[text][missing]`) cannot be flagged:
   CommonMark leaves it as literal text, so there is no node in the tree. The
   reader does see the broken brackets.
